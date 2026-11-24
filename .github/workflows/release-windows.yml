@@ -1,0 +1,96 @@
+name: Release Windows
+
+# Builds the zero-WebView2 native Windows app (apps/windows) and packages it into
+# KeyCat-Windows-Setup.exe via NSIS. Tag pushes upload the installer directly to the Release.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'crates/core/**'
+      - 'apps/windows/**'
+      - 'assets/icons/**'
+      - '.github/workflows/release-windows.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload (e.g. v2.1.1); leave empty to build current branch only'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check that the tag matches Cargo.toml workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml workspace version $version" >&2
+            exit 1
+          fi
+
+      - name: Run core tests
+        run: cargo test -p keycat-core
+
+      - name: Build native release binary
+        run: cargo build --release -p keycat-native
+
+      - name: Build NSIS installer
+        run: |
+          if command -v makensis >/dev/null 2>&1; then
+            MAKENSIS="makensis"
+          elif [ -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            MAKENSIS="/c/Program Files (x86)/NSIS/makensis.exe"
+          else
+            choco install nsis -y --no-progress
+            MAKENSIS="/c/Program Files (x86)/NSIS/makensis.exe"
+          fi
+          mkdir -p out
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          EXE_WIN="$(cygpath -w "$PWD/target/release/KeyCat.exe")"
+          OUT_WIN="$(cygpath -w "$PWD/out/KeyCat-Windows-Setup.exe")"
+          "$MAKENSIS" -INPUTCHARSET UTF8 -DVERSION="$VERSION" -DEXE_PATH="$EXE_WIN" -DOUT_FILE="$OUT_WIN" apps/windows/installer.nsi
+          (cd out && sha256sum KeyCat-Windows-Setup.exe | tee KeyCat-Windows-Setup.exe.sha256)
+          ls -lh out
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          [ -n "$TAG" ] || exit 0
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            out/KeyCat-Windows-Setup.exe \
+            out/KeyCat-Windows-Setup.exe.sha256 \
+            --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keycat-windows
+          path: out/*
+          if-no-files-found: error

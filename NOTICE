@@ -1,0 +1,25 @@
+KeyCat Slim
+Copyright (c) 2026 blycr
+
+Upstream Attribution
+--------------------
+This project originated as a fork and native rewrite of ElloboDK/KeyCat
+(https://github.com/ElloboDK/KeyCat). The original visual design concept,
+interaction ideas, and early macOS shell structure are credited to ElloboDK.
+The Rust core engine (crates/core, crates/ffi), Windows Direct3D 11 /
+DirectComposition / Direct2D implementation (apps/windows), and macOS Metal
+renderer (apps/macos) were written or rewritten for KeyCat Slim.
+
+As noted in the upstream project, the cat character concept is intended for
+personal use and learning rather than commercial redistribution.
+
+Third-Party Dependencies
+------------------------
+KeyCat Slim links against open-source crates governed by their respective
+licenses (primarily MIT and/or Apache-2.0):
+- serde_json (MIT OR Apache-2.0)
+- windows / windows-numerics (MIT OR Apache-2.0)
+- winreg (MIT)
+- winresource (MIT)
+
+Full transitive dependency metadata is recorded in Cargo.lock.

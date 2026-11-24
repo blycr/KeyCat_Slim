@@ -1,0 +1,58 @@
+name: Bug Report / 问题反馈
+description: 反馈程序崩溃、渲染异常、按键无响应或界面显示问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题。请尽量补充平台与版本信息，方便快速定位。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 运行平台
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: KeyCat 版本
+      placeholder: 例如 v2.1.1（可在托盘/菜单栏底部查看）
+    validations:
+      required: true
+  - type: input
+    id: install_method
+    attributes:
+      label: 安装方式
+      placeholder: 例如 Windows 安装包 / Homebrew Cask / 手动下载 ZIP / 源码编译
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰描述实际发生了什么，以及你预期应该发生什么。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 KeyCat
+        2. 点击……
+        3. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充环境信息（可选）
+      description: 如多显示器/缩放比例、刷新率、是否开启管理员模式或鼠标穿透、截图或报错信息。
+    validations:
+      required: false

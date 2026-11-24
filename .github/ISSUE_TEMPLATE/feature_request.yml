@@ -1,0 +1,35 @@
+name: Feature Request / 功能建议
+description: 提出新功能想法、外观扩展或交互优化建议
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 适用平台
+      options:
+        - Windows 与 macOS 双端
+        - 仅 Windows
+        - 仅 macOS
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景或痛点
+      description: 希望解决什么实际问题，或在什么场景下需要这个能力？
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的实现方式
+      description: 描述你理想的交互或视觉效果。
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 其他补充（可选）
+    validations:
+      required: false

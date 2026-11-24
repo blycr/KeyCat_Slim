@@ -1,0 +1,15 @@
+# Normalize line endings automatically across platforms
+* text=auto eol=lf
+
+# Keep shell scripts strictly LF so macOS and bash runners never fail
+*.sh text eol=lf
+
+# Keep NSIS scripts UTF-8 with BOM intact for Chinese installer UI
+*.nsi text
+
+# Binary assets
+*.ico binary
+*.png binary
+*.gif binary
+*.icns binary
+*.metallib binary

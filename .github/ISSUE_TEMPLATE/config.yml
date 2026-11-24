@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Releases / 最新安装包下载
+    url: https://github.com/blycr/KeyCat_Slim/releases/latest
+    about: 下载 Windows 安装程序或 macOS 通用包，并查看版本更新日志
+  - name: Homebrew Tap (macOS)
+    url: https://github.com/blycr/homebrew-tap
+    about: macOS Homebrew Cask 仓库与安装说明

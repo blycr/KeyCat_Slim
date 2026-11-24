@@ -1,0 +1,15 @@
+[package]
+name = "keycat-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "keycat_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+keycat-core = { path = "../core" }
+serde_json = "1"

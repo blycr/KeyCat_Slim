@@ -1,20 +1,20 @@
-# Build output and release artifacts
-build/
-dist/
+# Build outputs and packaged installers
+/target/
+/build/
+/dist/
+/out/
 
-# Local code-signing identity: private key plus its password. Never commit.
-signing/
+# Local code-signing identity (private key and password — never commit)
+/signing/
 
-# Screenshots and reference material from the paid app this is modelled on
-snaps/
-ref/
+# Local scratch / reference material
+/snaps/
+/ref/
 
+# OS and editor artifacts
 .DS_Store
-
-# Windows build (Tauri & Native)
-win/node_modules/
-win/target/
-win/gen/
-win/out/
-native/target/
-native/out/
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
