@@ -912,6 +912,9 @@ mod win_app {
                 APP.with(|cell| {
                     if let Ok(mut borrow) = cell.try_borrow_mut() {
                         if let Some(ref mut app) = *borrow {
+                            if !app.visible {
+                                app.set_visible(true);
+                            }
                             app.scene.annoy_now();
                         }
                     }
@@ -922,6 +925,9 @@ mod win_app {
                 APP.with(|cell| {
                     if let Ok(mut borrow) = cell.try_borrow_mut() {
                         if let Some(ref mut app) = *borrow {
+                            if !app.visible {
+                                app.set_visible(true);
+                            }
                             app.scene.curious_now(3.0);
                         }
                     }

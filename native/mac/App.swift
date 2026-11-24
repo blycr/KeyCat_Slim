@@ -301,12 +301,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func annoyNow() {
         guard let scene else { return }
+        if !panel.isVisible { setPanelVisible(true) }
         kc_scene_annoy_now(scene)
         rescheduleFrameLoop()
     }
 
     func curiousNow(seconds: Float) {
         guard let scene else { return }
+        if !panel.isVisible { setPanelVisible(true) }
         kc_scene_curious_now(scene, seconds)
         rescheduleFrameLoop()
     }

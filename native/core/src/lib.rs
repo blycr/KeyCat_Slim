@@ -54,5 +54,17 @@ mod tests {
             s.step(1.0 / 30.0);
         }
         assert!(s.sleep > 0.7);
+        // annoy_now while asleep must wake the cat and immediately trigger cross state
+        s.annoy_now();
+        s.step(1.0 / 60.0);
+        assert!(!s.asleep && s.is_cross());
+        // curious_now must override cross state cleanly
+        s.curious_now(3.0);
+        s.step(1.0 / 60.0);
+        assert!(!s.is_cross());
+        // annoy_now right after curious_now must override curiosity immediately
+        s.annoy_now();
+        s.step(1.0 / 60.0);
+        assert!(s.is_cross());
     }
 }

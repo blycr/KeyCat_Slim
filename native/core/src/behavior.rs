@@ -485,13 +485,25 @@ impl Scene {
         }
     }
 
+    pub fn is_cross(&self) -> bool {
+        self.cross
+    }
+
     pub fn annoy_now(&mut self) {
+        self.wake();
+        self.curious_until = -100.0;
         self.poke(1.0, true);
-        self.busy_until = self.busy_until.max(self.time + 3.0);
+        self.cross = true;
+        self.cross_since = self.time;
+        self.thump_phase = 0.0;
+        self.act = None;
+        self.busy_until = self.busy_until.max(self.time + 4.0);
     }
 
     pub fn curious_now(&mut self, seconds: f32) {
         let t = self.time;
+        self.cross = false;
+        self.annoy = 0.0;
         self.curious_until = t + seconds;
         self.busy_until = self.busy_until.max(t + seconds + 1.0);
         self.wake();
