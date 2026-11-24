@@ -1,0 +1,63 @@
+name: macOS
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload (e.g. v1.1.0); leave empty to build current branch only'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Build and package universal macOS app
+        run: |
+          sh mac/package.sh
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' mac/Info.plist)"
+          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' mac/Info.plist)"
+          SHA="$(cut -d' ' -f1 dist/KeyCat-macOS.zip.sha256)"
+          cat > dist/latest-mac.json <<EOF
+          {
+            "version": "$VERSION",
+            "build": $BUILD,
+            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$VERSION/KeyCat-macOS.zip",
+            "sha256": "$SHA"
+          }
+          EOF
+          cat dist/latest-mac.json
+          ls -lh dist
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          [ -n "$TAG" ] || exit 0
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            dist/KeyCat-macOS.zip \
+            dist/KeyCat-macOS.zip.sha256 \
+            dist/latest-mac.json \
+            --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keycat-macos
+          path: dist/*
+          if-no-files-found: error

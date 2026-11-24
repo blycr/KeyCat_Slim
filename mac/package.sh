@@ -15,11 +15,12 @@ ditto -c -k --keepParent build/KeyCat.app dist/KeyCat-macOS.zip
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' mac/Info.plist)"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' mac/Info.plist)"
 SHA="$(cut -d' ' -f1 dist/KeyCat-macOS.zip.sha256)"
+REPO="${GITHUB_REPOSITORY:-blycr/KeyCat_Slim}"
 cat > dist/latest-mac.json <<EOF
 {
   "version": "$VERSION",
   "build": $BUILD,
-  "url": "https://github.com/ElloboDK/KeyCat/releases/download/v$VERSION/KeyCat-macOS.zip",
+  "url": "https://github.com/$REPO/releases/download/v$VERSION/KeyCat-macOS.zip",
   "sha256": "$SHA"
 }
 EOF
