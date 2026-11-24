@@ -1,12 +1,12 @@
 ﻿; NSIS per-user installer for KeyCat Native (Windows, zero WebView2).
-; Build: makensis -INPUTCHARSET UTF8 -DVERSION=2.2.0 -DEXE_PATH=..\..\target\release\KeyCat.exe -DOUT_FILE=..\..\dist\KeyCat-Windows-Setup.exe installer.nsi
+; Build: makensis -INPUTCHARSET UTF8 -DVERSION=2.2.1 -DEXE_PATH=..\..\target\release\KeyCat.exe -DOUT_FILE=..\..\dist\KeyCat-Windows-Setup.exe installer.nsi
 
 Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
 !ifndef VERSION
-  !define VERSION "2.2.0"
+  !define VERSION "2.2.1"
 !endif
 !ifndef EXE_PATH
   !define EXE_PATH "..\..\target\release\KeyCat.exe"

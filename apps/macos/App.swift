@@ -199,7 +199,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.contentView = catView
 
         applyScale(scale, keepOrigin: false)
-        purrAudio = PurrAudio()
         if let mem = defaults.string(forKey: "memory"), !mem.isEmpty {
             mem.withCString { kc_scene_load_memory_json(scene, $0) }
         }
@@ -231,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopFrameLoop()
+        updater.stop()
         tapRetry?.invalidate()
         tapRetry = nil
         NotificationCenter.default.removeObserver(self)
@@ -327,6 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         panel?.alphaValue = CGFloat(op)
+        if !sound {
+            purrAudio?.stop()
+            purrAudio = nil
+        }
         kc_scene_set_options(scene, privacy ? 1 : 0, sleepAfter > 0 ? Float(sleepAfter) : 0)
         if let data = try? JSONSerialization.data(withJSONObject: tune),
            let json = String(data: data, encoding: .utf8) {
@@ -431,6 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             stopFrameLoop()
             purrAudio?.pause()
+            renderer?.releaseTargets()
             catView.cancelInteractions()
             if let scene {
                 for (_, code) in heldKeys {
@@ -518,7 +523,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastFrameTime = now
 
         kc_scene_step(scene, dt)
-        purrAudio?.sync(scene: scene)
+        if sound {
+            if purrAudio == nil { purrAudio = PurrAudio() }
+            purrAudio?.sync(scene: scene)
+        }
         flushMemory(force: false)
         let currentHit = kc_scene_hit(scene)
         if currentHit != hit {

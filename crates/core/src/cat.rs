@@ -114,6 +114,10 @@ pub struct ArmState {
     pub paw_pos: Vec3,
     pub paw_yaw: f32,
     pub limb: LimbMeshes,
+    last_shoulder: Vec3,
+    last_paw_pos: Vec3,
+    last_sprawl: f32,
+    mesh_init: bool,
 }
 
 pub struct Cat {
@@ -166,12 +170,16 @@ pub struct Cat {
     pub yawn_open: f32,
     pub lick_out: f32,
     pub tail_curve: CatmullRom3,
-    tail_chain: Vec<Vec3>,
-    tail_prev: Vec<Vec3>,
+    tail_want_curve: CatmullRom3,
+    tail_chain: [Vec3; TAIL_N + 1],
+    tail_prev: [Vec3; TAIL_N + 1],
     tail_link_len: f32,
     tail_chain_fresh: bool,
+    tail_mesh_init: bool,
     pub tail: LimbMeshes,
     pub arms: [ArmState; 2],
+    pub tail_dirty: bool,
+    pub arms_dirty: [bool; 2],
     pub dynamic_dirty: bool,
 }
 
@@ -350,6 +358,10 @@ impl Cat {
             paw_pos: Vec3::new(s * 0.36, 0.26, 0.68),
             paw_yaw: 0.0,
             limb: LimbMeshes::new(24, 18, true, true),
+            last_shoulder: Vec3::ZERO,
+            last_paw_pos: Vec3::ZERO,
+            last_sprawl: -1.0,
+            mesh_init: false,
         });
 
         let look = Look::default();
@@ -399,12 +411,16 @@ impl Cat {
             yawn_open: 0.0,
             lick_out: 0.0,
             tail_curve,
-            tail_chain: vec![Vec3::ZERO; TAIL_N + 1],
-            tail_prev: vec![Vec3::ZERO; TAIL_N + 1],
+            tail_want_curve: CatmullRom3::new(vec![Vec3::ZERO; tail_rest_pts().len()], false, 0.5),
+            tail_chain: [Vec3::ZERO; TAIL_N + 1],
+            tail_prev: [Vec3::ZERO; TAIL_N + 1],
             tail_link_len,
             tail_chain_fresh: true,
+            tail_mesh_init: false,
             tail,
             arms,
+            tail_dirty: true,
+            arms_dirty: [true, true],
             dynamic_dirty: true,
         };
         cat.place_collar();
@@ -617,6 +633,17 @@ impl Cat {
     pub fn update_arm(&mut self, i: usize, paw_pos: Vec3, sprawl: f32) {
         let shoulder = self.attach(self.arms[i].shoulder_local);
         let arm = &mut self.arms[i];
+        if arm.mesh_init
+            && shoulder.distance_sq(arm.last_shoulder) < 1e-10
+            && paw_pos.distance_sq(arm.last_paw_pos) < 1e-10
+            && (sprawl - arm.last_sprawl).abs() < 1e-4
+        {
+            return;
+        }
+        arm.last_shoulder = shoulder;
+        arm.last_paw_pos = paw_pos;
+        arm.last_sprawl = sprawl;
+        arm.mesh_init = true;
         arm.shoulder = shoulder;
         arm.hand = paw_pos;
         let a = arm.shoulder;
@@ -659,6 +686,7 @@ impl Cat {
         );
         arm.paw_yaw = (paw_pos.x - c2.x).atan2(paw_pos.z - c2.z);
         arm.paw_pos = paw_pos;
+        self.arms_dirty[i] = true;
         self.dynamic_dirty = true;
     }
 
@@ -681,7 +709,7 @@ impl Cat {
         let thump_pts = tail_thump_pts();
         let n = rest_pts.len();
         let curl = sleep.max(wrap);
-        let mut want_pts = Vec::with_capacity(n);
+        self.tail_want_curve.points.resize(n, Vec3::ZERO);
         for i in 0..n {
             let w = i as f32 / (n - 1) as f32;
             let mut local = rest_pts[i].lerp(sleep_pts[i], curl);
@@ -694,11 +722,11 @@ impl Cat {
             }
             let attached = self.attach(local);
             let loose = local + HOME + (self.body_pos - HOME) * 0.3;
-            want_pts.push(attached.lerp(loose, smooth(0.1, 0.7, w)));
+            self.tail_want_curve.points[i] = attached.lerp(loose, smooth(0.1, 0.7, w));
         }
         if reach > 0.0 {
             if let Some(tip) = reach_tip {
-                let root = want_pts[0];
+                let root = self.tail_want_curve.points[0];
                 let reach_path = [
                     Vec3::new(root.x + 0.36, 0.3, root.z + 0.14),
                     Vec3::new(tip.x + 0.34, 0.31, mix(root.z, tip.z, 0.55)),
@@ -706,16 +734,17 @@ impl Cat {
                     Vec3::new(tip.x + 0.11, mix(0.33, tip.y + 0.02, 0.5), tip.z + 0.02),
                     tip,
                 ];
-                for i in 1..want_pts.len() {
-                    want_pts[i] = want_pts[i].lerp(reach_path[i - 1], reach * if i == 1 { 0.6 } else { 1.0 });
+                for i in 1..n {
+                    self.tail_want_curve.points[i] = self.tail_want_curve.points[i]
+                        .lerp(reach_path[i - 1], reach * if i == 1 { 0.6 } else { 1.0 });
                 }
             }
         }
 
-        // Fixed-length chain with travelling wave & Verlet inertia so the tail never stretches.
-        let want_curve = CatmullRom3::new(want_pts, false, 0.5);
-        let sampled = want_curve.get_spaced_points(TAIL_N);
-        let mut goal = vec![Vec3::ZERO; TAIL_N + 1];
+        // Fixed-length chain with travelling wave & Verlet inertia (zero heap allocations).
+        let mut sampled = [Vec3::ZERO; TAIL_N + 1];
+        self.tail_want_curve.sample_spaced_into(&mut sampled);
+        let mut goal = [Vec3::ZERO; TAIL_N + 1];
         goal[0] = sampled[0];
         let y_up = Vec3::new(0.0, 1.0, 0.0);
         let mut bend_q = Quat::IDENTITY;
@@ -746,8 +775,8 @@ impl Cat {
             || dt > 0.25
             || self.tail_chain[0].distance_sq(goal[0]) > 0.04
         {
-            self.tail_chain.copy_from_slice(&goal);
-            self.tail_prev.copy_from_slice(&goal);
+            self.tail_chain = goal;
+            self.tail_prev = goal;
             self.tail_chain_fresh = false;
         } else {
             let f = (dt * 60.0).min(3.0);
@@ -776,23 +805,31 @@ impl Cat {
             }
         }
 
-        // Blend toward exact reach_tip during Space bar tail-pat so the tip hits the keycap cleanly.
-        let mut pts = Vec::with_capacity(TAIL_N + 1);
+        // Reuse tail_curve.points in-place and skip tube rebuild if settled.
+        self.tail_curve.points.resize(TAIL_N + 1, Vec3::ZERO);
+        let mut max_delta_sq = 0.0f32;
         for i in 0..=TAIL_N {
             let mut p = self.tail_chain[i];
             if reach > 0.0 {
                 p = p.lerp(sampled[i], reach);
             }
-            pts.push(p);
+            let d2 = p.distance_sq(self.tail_curve.points[i]);
+            if d2 > max_delta_sq {
+                max_delta_sq = d2;
+            }
+            self.tail_curve.points[i] = p;
         }
-        self.tail_curve.points = pts;
-        let curve = &self.tail_curve;
-        self.tail.update(
-            |t| curve.get_point(t),
-            |t| mix(0.085, 0.068, t) + 0.014 * smooth(0.8, 1.0, t),
-            |_| 0.022,
-        );
-        self.dynamic_dirty = true;
+        if !self.tail_mesh_init || max_delta_sq > 1e-10 {
+            self.tail_mesh_init = true;
+            let curve = &self.tail_curve;
+            self.tail.update(
+                |t| curve.get_point(t),
+                |t| mix(0.085, 0.068, t) + 0.014 * smooth(0.8, 1.0, t),
+                |_| 0.022,
+            );
+            self.tail_dirty = true;
+            self.dynamic_dirty = true;
+        }
     }
 
     pub fn tail_tip(&self) -> Vec3 {

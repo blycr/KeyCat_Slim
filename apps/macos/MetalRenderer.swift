@@ -95,15 +95,26 @@ final class MetalRenderer {
     }
 
     private func uploadInitialMeshes(scene: OpaquePointer) {
-        for id in 0..<UInt32(KC_MESH_STATIC_COUNT) {
+        // Upload core static meshes; defer optional cup/hat meshes until actually drawn.
+        for id in 0..<UInt32(KC_MESH_CUP_BODY) {
             let mv = kc_scene_static_mesh(scene, id)
             staticMeshes[Int(id)] = uploadStatic(mv)
         }
-        for id in 0..<UInt32(KC_DYN_COUNT) {
+        // Upload core dynamic meshes; defer cup steam until first steam update.
+        for id in 0..<UInt32(KC_DYN_STEAM_A) {
             let mv = kc_scene_dynamic_mesh(scene, id)
             dynMeshes[Int(id)] = uploadDynamic(mv)
         }
         uploadKeyboardInstances(scene: scene)
+    }
+
+    private func ensureStaticMesh(scene: OpaquePointer, id: UInt32) -> GpuMesh? {
+        let idx = Int(id)
+        if let existing = staticMeshes[idx] { return existing }
+        let mv = kc_scene_static_mesh(scene, id)
+        guard let uploaded = uploadStatic(mv) else { return nil }
+        staticMeshes[idx] = uploaded
+        return uploaded
     }
 
     private func uploadStatic(_ mv: KcMeshView) -> GpuMesh? {
@@ -191,6 +202,14 @@ final class MetalRenderer {
         depthTex = device.makeTexture(descriptor: dDesc)
     }
 
+    /// Releases offscreen MSAA and depth textures while the window is hidden to free GPU/unified memory.
+    func releaseTargets() {
+        msaaTex = nil
+        depthTex = nil
+        targetW = 0
+        targetH = 0
+    }
+
     /// Renders one frame onto a CAMetalLayer drawable.
     func render(scene: OpaquePointer, layer: CAMetalLayer) {
         let w = Int(layer.drawableSize.width)
@@ -253,10 +272,17 @@ final class MetalRenderer {
         if frame.cable_dirty != 0 {
             updateDynamic(id: UInt32(KC_DYN_CABLE), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_CABLE)))
         }
-        if frame.cat_dyn_dirty != 0 {
-            for id in UInt32(KC_DYN_TAIL_FILL)...UInt32(KC_DYN_ARM_RIM_1) {
-                updateDynamic(id: id, mv: kc_scene_dynamic_mesh(scene, id))
-            }
+        if (frame.cat_dyn_dirty & 1) != 0 {
+            updateDynamic(id: UInt32(KC_DYN_TAIL_FILL), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_TAIL_FILL)))
+            updateDynamic(id: UInt32(KC_DYN_TAIL_RIM), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_TAIL_RIM)))
+        }
+        if (frame.cat_dyn_dirty & 2) != 0 {
+            updateDynamic(id: UInt32(KC_DYN_ARM_FILL_0), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_ARM_FILL_0)))
+            updateDynamic(id: UInt32(KC_DYN_ARM_RIM_0), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_ARM_RIM_0)))
+        }
+        if (frame.cat_dyn_dirty & 4) != 0 {
+            updateDynamic(id: UInt32(KC_DYN_ARM_FILL_1), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_ARM_FILL_1)))
+            updateDynamic(id: UInt32(KC_DYN_ARM_RIM_1), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_ARM_RIM_1)))
         }
         if frame.steam_dirty != 0 {
             updateDynamic(id: UInt32(KC_DYN_STEAM_A), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_STEAM_A)))
@@ -333,6 +359,9 @@ final class MetalRenderer {
                 let ib: MTLBuffer
                 let indexCount: Int
                 if d.is_dynamic != 0 {
+                    if dynMeshes[Int(d.mesh_id)] == nil {
+                        dynMeshes[Int(d.mesh_id)] = uploadDynamic(kc_scene_dynamic_mesh(scene, d.mesh_id))
+                    }
                     guard let dm = dynMeshes[Int(d.mesh_id)] else { continue }
                     vb = dm.vb; ib = dm.ib; indexCount = dm.indexCount
                 } else if d.mesh_id == UInt32(KC_MESH_EAR_FILL) {
@@ -342,7 +371,7 @@ final class MetalRenderer {
                     guard let eg = activeEar else { continue }
                     vb = eg.rim.vb; ib = eg.rim.ib; indexCount = eg.rim.indexCount
                 } else {
-                    guard let sm = staticMeshes[Int(d.mesh_id)] else { continue }
+                    guard let sm = ensureStaticMesh(scene: scene, id: d.mesh_id) else { continue }
                     vb = sm.vb; ib = sm.ib; indexCount = sm.indexCount
                 }
 

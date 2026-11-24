@@ -7,12 +7,21 @@ import Metal
 final class SpriteAtlas {
     private let device: MTLDevice
     private var cache: [String: MTLTexture] = [:]
+    private var latestBubble: (label: String, texture: MTLTexture)?
 
     init(device: MTLDevice) {
         self.device = device
     }
 
     func texture(kind: UInt32, label: String) -> MTLTexture? {
+        if kind == UInt32(KC_SPRITE_BUBBLE) {
+            if let cached = latestBubble, cached.label == label {
+                return cached.texture
+            }
+            guard let tex = bake(kind: kind, label: label) else { return nil }
+            latestBubble = (label: label, texture: tex)
+            return tex
+        }
         let key = "\(kind):\(label)"
         if let existing = cache[key] { return existing }
         guard let tex = bake(kind: kind, label: label) else { return nil }

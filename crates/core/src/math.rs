@@ -727,6 +727,57 @@ impl CatmullRom3 {
         }
         out
     }
+
+    /// Zero-allocation arc-length parameterized sampling into a fixed-size stack array.
+    pub fn sample_spaced_into<const N: usize>(&self, out: &mut [Vec3; N]) {
+        if N == 0 {
+            return;
+        }
+        if N == 1 {
+            out[0] = self.get_point(0.0);
+            return;
+        }
+        const ARC_DIVS: usize = 64;
+        let mut lengths = [0.0f32; ARC_DIVS + 1];
+        let mut last = self.get_point(0.0);
+        let mut sum = 0.0f32;
+        for p in 1..=ARC_DIVS {
+            let cur = self.get_point(p as f32 / ARC_DIVS as f32);
+            sum += cur.distance(last);
+            lengths[p] = sum;
+            last = cur;
+        }
+        let divs = (N - 1) as f32;
+        for (d, slot) in out.iter_mut().enumerate() {
+            let target = (d as f32 / divs) * sum;
+            let mut low = 0usize;
+            let mut high = ARC_DIVS;
+            while low <= high {
+                let mid = (low + high) / 2;
+                let diff = lengths[mid] - target;
+                if diff < 0.0 {
+                    low = mid + 1;
+                } else if diff > 0.0 {
+                    if mid == 0 {
+                        break;
+                    }
+                    high = mid - 1;
+                } else {
+                    high = mid;
+                    break;
+                }
+            }
+            let i = high.min(ARC_DIVS);
+            let mapped = if (lengths[i] - target).abs() < 1e-6 || i == ARC_DIVS {
+                i as f32 / ARC_DIVS as f32
+            } else {
+                let seg = lengths[i + 1] - lengths[i];
+                let frac = if seg > 1e-8 { (target - lengths[i]) / seg } else { 0.0 };
+                (i as f32 + frac) / ARC_DIVS as f32
+            };
+            *slot = self.get_point(mapped);
+        }
+    }
 }
 
 fn nonuniform_catmull_rom(

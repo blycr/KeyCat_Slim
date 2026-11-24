@@ -289,10 +289,14 @@ impl KcScene {
 
         let kb_dirty = u8::from(self.scene.keyboard.instances_dirty);
         let cable_dirty = u8::from(self.scene.mouse.cable_dirty);
-        let cat_dyn_dirty = u8::from(self.scene.cat.dynamic_dirty);
+        let cat_dyn_dirty = u8::from(self.scene.cat.tail_dirty)
+            | (u8::from(self.scene.cat.arms_dirty[0]) << 1)
+            | (u8::from(self.scene.cat.arms_dirty[1]) << 2);
         let steam_dirty = u8::from(self.scene.cup.steam_dirty);
         self.scene.keyboard.instances_dirty = false;
         self.scene.mouse.cable_dirty = false;
+        self.scene.cat.tail_dirty = false;
+        self.scene.cat.arms_dirty = [false, false];
         self.scene.cat.dynamic_dirty = false;
         self.scene.cup.steam_dirty = false;
 

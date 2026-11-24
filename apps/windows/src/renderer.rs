@@ -14,13 +14,13 @@ mod imp {
     use keycat_core::keyboard::KeyInstance;
     use keycat_core::life::Festival;
     use keycat_core::math::{hex_color, Mat4, Vec3};
-    use windows::core::{Interface, Result, BOOL, PCSTR};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    use windows::core::{s, w, Error, Interface, Result, BOOL, HRESULT, PCSTR};
+    use windows::Win32::Foundation::{FreeLibrary, HMODULE, HWND};
     use windows::Win32::Graphics::Direct3D::{
         ID3DBlob, D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0,
         D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
     };
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows::Win32::Graphics::Direct3D11::{
         D3D11CreateDevice, ID3D11BlendState, ID3D11Buffer, ID3D11DepthStencilState,
         ID3D11DepthStencilView, ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout,
@@ -49,9 +49,9 @@ mod imp {
         DXGI_FORMAT_R32_UINT, DXGI_SAMPLE_DESC,
     };
     use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory2, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, DXGI_CREATE_FACTORY_FLAGS,
-        DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-        DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        CreateDXGIFactory2, IDXGIDevice, IDXGIDevice3, IDXGIFactory2, IDXGISwapChain1,
+        DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+        DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     };
 
     use crate::textures::SpriteAtlas;
@@ -110,14 +110,29 @@ mod imp {
         rim: GpuMesh,
     }
 
+    struct CupGpu {
+        body: GpuMesh,
+        rim: GpuMesh,
+        handle: GpuMesh,
+        coffee: GpuMesh,
+        steam_a: DynamicMesh,
+        steam_b: DynamicMesh,
+    }
+
+    struct HatGpu {
+        cone: GpuMesh,
+        brim: GpuMesh,
+        ring: GpuMesh,
+    }
+
     pub struct Renderer {
         device: ID3D11Device,
         ctx: ID3D11DeviceContext,
         swap_chain: IDXGISwapChain1,
         dcomp_device: IDCompositionDevice,
         _dcomp_target: IDCompositionTarget,
-        _dcomp_visual: IDCompositionVisual,
-        dcomp_effect: IDCompositionEffectGroup,
+        dcomp_visual: IDCompositionVisual,
+        dcomp_effect: Option<IDCompositionEffectGroup>,
         last_opacity: f32,
         sample_count: u32,
         width: u32,
@@ -188,13 +203,8 @@ mod imp {
         mouse_wheel_gpu: GpuMesh,
         mouse_seam_gpu: GpuMesh,
         mouse_btn_gpu: GpuMesh,
-        cup_body_gpu: GpuMesh,
-        cup_rim_gpu: GpuMesh,
-        cup_handle_gpu: GpuMesh,
-        cup_coffee_gpu: GpuMesh,
-        hat_cone_gpu: GpuMesh,
-        hat_brim_gpu: GpuMesh,
-        hat_ring_gpu: GpuMesh,
+        cup_gpu: Option<CupGpu>,
+        hat_gpu: Option<HatGpu>,
 
         // Dynamic vertex buffers (updated in place)
         tail_fill_dyn: DynamicMesh,
@@ -202,10 +212,8 @@ mod imp {
         arm_fill_dyn: [DynamicMesh; 2],
         arm_rim_dyn: [DynamicMesh; 2],
         cable_dyn: DynamicMesh,
-        steam_a_dyn: DynamicMesh,
-        steam_b_dyn: DynamicMesh,
 
-        atlas: SpriteAtlas,
+        atlas: Option<SpriteAtlas>,
     }
 
     impl Renderer {
@@ -256,10 +264,19 @@ mod imp {
                 unsafe { DCompositionCreateDevice(&dxgi_device)? };
             let dcomp_target = unsafe { dcomp_device.CreateTargetForHwnd(hwnd, true)? };
             let dcomp_visual = unsafe { dcomp_device.CreateVisual()? };
-            let dcomp_effect = unsafe { dcomp_device.CreateEffectGroup()? };
+            // Only attach IDCompositionEffectGroup when semi-transparent (< 1.0);
+            // attaching it at 100% opacity forces DWM to allocate an extra offscreen surface.
+            let dcomp_effect = if scene.opacity < 0.999 {
+                let eff = unsafe { dcomp_device.CreateEffectGroup()? };
+                unsafe {
+                    eff.SetOpacity2(scene.opacity)?;
+                    dcomp_visual.SetEffect(&eff)?;
+                }
+                Some(eff)
+            } else {
+                None
+            };
             unsafe {
-                dcomp_effect.SetOpacity2(scene.opacity)?;
-                dcomp_visual.SetEffect(&dcomp_effect)?;
                 dcomp_visual.SetContent(&swap_chain)?;
                 dcomp_target.SetRoot(&dcomp_visual)?;
                 dcomp_device.Commit()?;
@@ -270,15 +287,31 @@ mod imp {
             };
             let sample_count = if msaa4 > 0 { 4 } else { 1 };
 
-            // Compile shaders
-            let vs_basic_bc = compile_shader("vs_basic\0", "vs_5_0\0")?;
-            let ps_basic_bc = compile_shader("ps_basic\0", "ps_5_0\0")?;
-            let vs_inst_bc = compile_shader("vs_instanced\0", "vs_5_0\0")?;
-            let ps_inst_bc = compile_shader("ps_instanced\0", "ps_5_0\0")?;
-            let vs_fur_bc = compile_shader("vs_fur\0", "vs_5_0\0")?;
-            let ps_fur_bc = compile_shader("ps_fur\0", "ps_5_0\0")?;
-            let vs_sprite_bc = compile_shader("vs_sprite\0", "vs_5_0\0")?;
-            let ps_sprite_bc = compile_shader("ps_sprite\0", "ps_5_0\0")?;
+            // Compile shaders via dynamically loaded d3dcompiler_47.dll, copy bytecode out,
+            // release all ID3DBlob objects, and immediately FreeLibrary so the 4.5 MB compiler DLL
+            // never stays resident in memory.
+            let (
+                vs_basic_bc,
+                ps_basic_bc,
+                vs_inst_bc,
+                ps_inst_bc,
+                vs_fur_bc,
+                ps_fur_bc,
+                vs_sprite_bc,
+                ps_sprite_bc,
+            ) = {
+                let compiler = ShaderCompiler::load()?;
+                (
+                    compiler.compile("vs_basic\0", "vs_5_0\0")?,
+                    compiler.compile("ps_basic\0", "ps_5_0\0")?,
+                    compiler.compile("vs_instanced\0", "vs_5_0\0")?,
+                    compiler.compile("ps_instanced\0", "ps_5_0\0")?,
+                    compiler.compile("vs_fur\0", "vs_5_0\0")?,
+                    compiler.compile("ps_fur\0", "ps_5_0\0")?,
+                    compiler.compile("vs_sprite\0", "vs_5_0\0")?,
+                    compiler.compile("ps_sprite\0", "ps_5_0\0")?,
+                )
+            };
 
             let vs_basic = create_vs(&device, &vs_basic_bc)?;
             let ps_basic = create_ps(&device, &ps_basic_bc)?;
@@ -299,11 +332,7 @@ mod imp {
             ];
             let mut il_vertex = None;
             unsafe {
-                device.CreateInputLayout(
-                    &vert_elems,
-                    blob_bytes(&vs_basic_bc),
-                    Some(&mut il_vertex),
-                )?;
+                device.CreateInputLayout(&vert_elems, &vs_basic_bc, Some(&mut il_vertex))?;
             }
             let il_vertex = il_vertex.unwrap();
 
@@ -321,11 +350,7 @@ mod imp {
             ];
             let mut il_instanced = None;
             unsafe {
-                device.CreateInputLayout(
-                    &inst_elems,
-                    blob_bytes(&vs_inst_bc),
-                    Some(&mut il_instanced),
-                )?;
+                device.CreateInputLayout(&inst_elems, &vs_inst_bc, Some(&mut il_instanced))?;
             }
             let il_instanced = il_instanced.unwrap();
 
@@ -394,13 +419,6 @@ mod imp {
             let mouse_wheel_gpu = upload_static(&device, &mp.wheel_geo)?;
             let mouse_seam_gpu = upload_static(&device, &mp.seam.mesh)?;
             let mouse_btn_gpu = upload_static(&device, &mp.button_geo)?;
-            let cup_body_gpu = upload_static(&device, &scene.cup.body_geo)?;
-            let cup_rim_gpu = upload_static(&device, &scene.cup.rim_geo)?;
-            let cup_handle_gpu = upload_static(&device, &scene.cup.handle_geo)?;
-            let cup_coffee_gpu = upload_static(&device, &scene.cup.coffee_geo)?;
-            let hat_cone_gpu = upload_static(&device, &c.hat_cone_geo)?;
-            let hat_brim_gpu = upload_static(&device, &c.hat_brim_geo)?;
-            let hat_ring_gpu = upload_static(&device, &c.hat_ring_geo)?;
 
             let tail_fill_dyn = upload_dynamic(&device, &c.tail.body.mesh)?;
             let tail_rim_dyn = upload_dynamic(&device, &c.tail.rim.mesh)?;
@@ -413,10 +431,6 @@ mod imp {
                 upload_dynamic(&device, &c.arms[1].limb.rim.mesh)?,
             ];
             let cable_dyn = upload_dynamic(&device, &mp.cable.mesh)?;
-            let steam_a_dyn = upload_dynamic(&device, &scene.cup.steam_a.mesh)?;
-            let steam_b_dyn = upload_dynamic(&device, &scene.cup.steam_b.mesh)?;
-
-            let atlas = SpriteAtlas::new()?;
 
             let mut r = Self {
                 device,
@@ -424,7 +438,7 @@ mod imp {
                 swap_chain,
                 dcomp_device,
                 _dcomp_target: dcomp_target,
-                _dcomp_visual: dcomp_visual,
+                dcomp_visual,
                 dcomp_effect,
                 last_opacity: scene.opacity,
                 sample_count,
@@ -488,24 +502,38 @@ mod imp {
                 mouse_wheel_gpu,
                 mouse_seam_gpu,
                 mouse_btn_gpu,
-                cup_body_gpu,
-                cup_rim_gpu,
-                cup_handle_gpu,
-                cup_coffee_gpu,
-                hat_cone_gpu,
-                hat_brim_gpu,
-                hat_ring_gpu,
+                cup_gpu: None,
+                hat_gpu: None,
                 tail_fill_dyn,
                 tail_rim_dyn,
                 arm_fill_dyn,
                 arm_rim_dyn,
                 cable_dyn,
-                steam_a_dyn,
-                steam_b_dyn,
-                atlas,
+                atlas: None,
             };
             r.create_targets()?;
+            r.trim_driver();
             Ok(r)
+        }
+
+        fn trim_driver(&self) {
+            unsafe {
+                if let Ok(dxgi3) = self.device.cast::<IDXGIDevice3>() {
+                    dxgi3.Trim();
+                }
+            }
+        }
+
+        pub fn release_targets_and_trim(&mut self) {
+            unsafe {
+                self.ctx.OMSetRenderTargets(None, None);
+                self.ctx.ClearState();
+                self.ctx.Flush();
+            }
+            self.msaa_rtv = None;
+            self.msaa_tex = None;
+            self.dsv = None;
+            self.trim_driver();
         }
 
         fn create_targets(&mut self) -> Result<()> {
@@ -586,10 +614,50 @@ mod imp {
             0
         }
 
+        fn ensure_cup_gpu(&mut self, scene: &Scene) -> bool {
+            if self.cup_gpu.is_some() {
+                return true;
+            }
+            let cup = &scene.cup;
+            if let (Ok(body), Ok(rim), Ok(handle), Ok(coffee), Ok(steam_a), Ok(steam_b)) = (
+                upload_static(&self.device, &cup.body_geo),
+                upload_static(&self.device, &cup.rim_geo),
+                upload_static(&self.device, &cup.handle_geo),
+                upload_static(&self.device, &cup.coffee_geo),
+                upload_dynamic(&self.device, &cup.steam_a.mesh),
+                upload_dynamic(&self.device, &cup.steam_b.mesh),
+            ) {
+                write_buf(&self.ctx, &steam_a.vb, &cup.steam_a.mesh.vertices);
+                write_buf(&self.ctx, &steam_b.vb, &cup.steam_b.mesh.vertices);
+                self.cup_gpu = Some(CupGpu { body, rim, handle, coffee, steam_a, steam_b });
+                return true;
+            }
+            false
+        }
+
+        fn ensure_hat_gpu(&mut self, scene: &Scene) -> bool {
+            if self.hat_gpu.is_some() {
+                return true;
+            }
+            let c = &scene.cat;
+            if let (Ok(cone), Ok(brim), Ok(ring)) = (
+                upload_static(&self.device, &c.hat_cone_geo),
+                upload_static(&self.device, &c.hat_brim_geo),
+                upload_static(&self.device, &c.hat_ring_geo),
+            ) {
+                self.hat_gpu = Some(HatGpu { cone, brim, ring });
+                return true;
+            }
+            false
+        }
+
         pub fn render(&mut self, scene: &mut Scene) {
+            if self.msaa_rtv.is_none() && self.create_targets().is_err() {
+                return;
+            }
             let ear_idx = self.ensure_ear_gpu(scene);
 
-            // Upload dirty dynamic meshes & keyboard instances
+            // Upload dirty dynamic meshes & keyboard instances (per-part to minimize WRITE_DISCARD)
             if scene.keyboard.instances_dirty {
                 write_buf(&self.ctx, &self.kb_side_inst, &scene.keyboard.side_instances);
                 write_buf(&self.ctx, &self.kb_top_inst, &scene.keyboard.top_instances);
@@ -600,25 +668,50 @@ mod imp {
                 write_buf(&self.ctx, &self.cable_dyn.vb, &scene.mouse.cable.mesh.vertices);
                 scene.mouse.cable_dirty = false;
             }
-            if scene.cat.dynamic_dirty {
+            if scene.cat.tail_dirty {
                 write_buf(&self.ctx, &self.tail_fill_dyn.vb, &scene.cat.tail.body.mesh.vertices);
                 write_buf(&self.ctx, &self.tail_rim_dyn.vb, &scene.cat.tail.rim.mesh.vertices);
-                for i in 0..2 {
+                scene.cat.tail_dirty = false;
+            }
+            for i in 0..2 {
+                if scene.cat.arms_dirty[i] {
                     write_buf(&self.ctx, &self.arm_fill_dyn[i].vb, &scene.cat.arms[i].limb.body.mesh.vertices);
                     write_buf(&self.ctx, &self.arm_rim_dyn[i].vb, &scene.cat.arms[i].limb.rim.mesh.vertices);
+                    scene.cat.arms_dirty[i] = false;
                 }
-                scene.cat.dynamic_dirty = false;
             }
-            if scene.cup.steam_dirty {
-                write_buf(&self.ctx, &self.steam_a_dyn.vb, &scene.cup.steam_a.mesh.vertices);
-                write_buf(&self.ctx, &self.steam_b_dyn.vb, &scene.cup.steam_b.mesh.vertices);
+            scene.cat.dynamic_dirty = false;
+
+            if scene.cup.visible() && self.ensure_cup_gpu(scene) && scene.cup.steam_dirty {
+                if let Some(ref cg) = self.cup_gpu {
+                    write_buf(&self.ctx, &cg.steam_a.vb, &scene.cup.steam_a.mesh.vertices);
+                    write_buf(&self.ctx, &cg.steam_b.vb, &scene.cup.steam_b.mesh.vertices);
+                }
                 scene.cup.steam_dirty = false;
+            } else if !scene.cup.enabled && self.cup_gpu.is_some() {
+                self.cup_gpu = None;
             }
+
             if (scene.opacity - self.last_opacity).abs() > 1e-3 {
                 self.last_opacity = scene.opacity;
                 unsafe {
-                    let _ = self.dcomp_effect.SetOpacity2(scene.opacity);
-                    let _ = self.dcomp_device.Commit();
+                    if scene.opacity >= 0.999 {
+                        if self.dcomp_effect.take().is_some() {
+                            let _ = self.dcomp_visual.SetEffect(None);
+                            let _ = self.dcomp_device.Commit();
+                        }
+                    } else {
+                        if self.dcomp_effect.is_none() {
+                            if let Ok(eff) = self.dcomp_device.CreateEffectGroup() {
+                                let _ = self.dcomp_visual.SetEffect(&eff);
+                                self.dcomp_effect = Some(eff);
+                            }
+                        }
+                        if let Some(ref eff) = self.dcomp_effect {
+                            let _ = eff.SetOpacity2(scene.opacity);
+                            let _ = self.dcomp_device.Commit();
+                        }
+                    }
                 }
             }
 
@@ -678,24 +771,26 @@ mod imp {
 
             // ===== Order -2: desk cup, mouse outer shell + hind paw rims =====
             if scene.cup.visible() {
-                let cw = scene.cup.world_matrix();
-                let hw = scene.cup.handle_world();
-                let cfw = scene.cup.coffee_world();
-                let alpha = scene.cup.opacity;
-                let blend = if alpha < 0.99 { &self.blend_premul } else { &self.blend_opaque };
-                self.set_basic_pipe(&self.rs_back, &self.ds_rw, blend);
-                self.draw_static(&self.cup_rim_gpu, cw, view, hex_color("#2a241f"), alpha, [0.0; 4]);
-                self.set_basic_pipe(&self.rs_front, &self.ds_rw, blend);
-                self.draw_static(&self.cup_body_gpu, cw, view, hex_color("#f7f2e7"), alpha, [0.0; 4]);
-                self.draw_static(&self.cup_handle_gpu, hw, view, hex_color("#efe7d7"), alpha, [0.0; 4]);
-                self.draw_static(&self.cup_coffee_gpu, cfw, view, hex_color("#5b3a24"), alpha, [0.0; 4]);
-                if scene.cup.steam_opacity_a > 0.01 || scene.cup.steam_opacity_b > 0.01 {
-                    self.set_basic_pipe(&self.rs_none, &self.ds_ro, &self.blend_premul);
-                    if scene.cup.steam_opacity_a > 0.01 {
-                        self.draw_dynamic(&self.steam_a_dyn, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_a, [0.0; 4]);
-                    }
-                    if scene.cup.steam_opacity_b > 0.01 {
-                        self.draw_dynamic(&self.steam_b_dyn, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_b, [0.0; 4]);
+                if let Some(ref cg) = self.cup_gpu {
+                    let cw = scene.cup.world_matrix();
+                    let hw = scene.cup.handle_world();
+                    let cfw = scene.cup.coffee_world();
+                    let alpha = scene.cup.opacity;
+                    let blend = if alpha < 0.99 { &self.blend_premul } else { &self.blend_opaque };
+                    self.set_basic_pipe(&self.rs_back, &self.ds_rw, blend);
+                    self.draw_static(&cg.rim, cw, view, hex_color("#2a241f"), alpha, [0.0; 4]);
+                    self.set_basic_pipe(&self.rs_front, &self.ds_rw, blend);
+                    self.draw_static(&cg.body, cw, view, hex_color("#f7f2e7"), alpha, [0.0; 4]);
+                    self.draw_static(&cg.handle, hw, view, hex_color("#efe7d7"), alpha, [0.0; 4]);
+                    self.draw_static(&cg.coffee, cfw, view, hex_color("#5b3a24"), alpha, [0.0; 4]);
+                    if scene.cup.steam_opacity_a > 0.01 || scene.cup.steam_opacity_b > 0.01 {
+                        self.set_basic_pipe(&self.rs_none, &self.ds_ro, &self.blend_premul);
+                        if scene.cup.steam_opacity_a > 0.01 {
+                            self.draw_dynamic(&cg.steam_a, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_a, [0.0; 4]);
+                        }
+                        if scene.cup.steam_opacity_b > 0.01 {
+                            self.draw_dynamic(&cg.steam_b, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_b, [0.0; 4]);
+                        }
                     }
                 }
             }
@@ -893,26 +988,30 @@ mod imp {
                 self.set_basic_pipe(&self.rs_front, &self.ds_none, &self.blend_opaque);
                 self.draw_static(&self.disc_gpu, scene.cat.lick_world(), view, hex_color("#f393a3"), 1.0, [0.0; 4]);
             }
-            if matches!(outfit, Festival::Xmas | Festival::Halloween | Festival::Birthday) {
-                self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
-                let hr = scene.cat.hat_root_world();
-                match outfit {
-                    Festival::Xmas => {
-                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.28, 0.56, 0.28))), view, hex_color("#d9483b"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.27, 0.27, 0.27))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.56, 0.0), Vec3::ZERO, Vec3::splat(1.3))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+            if matches!(outfit, Festival::Xmas | Festival::Halloween | Festival::Birthday)
+                && self.ensure_hat_gpu(scene)
+            {
+                if let Some(ref hg) = self.hat_gpu {
+                    self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
+                    let hr = scene.cat.hat_root_world();
+                    match outfit {
+                        Festival::Xmas => {
+                            self.draw_static(&hg.cone, hr.mul(Mat4::from_scale(Vec3::new(0.28, 0.56, 0.28))), view, hex_color("#d9483b"), 1.0, [0.0; 4]);
+                            self.draw_static(&hg.ring, hr.mul(Mat4::from_scale(Vec3::new(0.27, 0.27, 0.27))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                            self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.56, 0.0), Vec3::ZERO, Vec3::splat(1.3))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                        }
+                        Festival::Halloween => {
+                            self.draw_static(&hg.brim, hr.mul(Mat4::from_scale(Vec3::new(0.45, 0.028, 0.45))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                            self.draw_static(&hg.cone, hr.mul(Mat4::from_scale(Vec3::new(0.22, 0.60, 0.22))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                            self.draw_static(&hg.ring, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.05, 0.0), Vec3::ZERO, Vec3::new(0.21, 0.18, 0.21))), view, hex_color("#9a6bd1"), 1.0, [0.0; 4]);
+                        }
+                        Festival::Birthday => {
+                            self.draw_static(&hg.cone, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.54, 0.21))), view, hex_color("#ee8fb4"), 1.0, [0.0; 4]);
+                            self.draw_static(&hg.ring, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.16, 0.21))), view, hex_color("#70c4b8"), 1.0, [0.0; 4]);
+                            self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.54, 0.0), Vec3::ZERO, Vec3::splat(1.15))), view, hex_color("#f2c94c"), 1.0, [0.0; 4]);
+                        }
+                        _ => {}
                     }
-                    Festival::Halloween => {
-                        self.draw_static(&self.hat_brim_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.45, 0.028, 0.45))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.22, 0.60, 0.22))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.05, 0.0), Vec3::ZERO, Vec3::new(0.21, 0.18, 0.21))), view, hex_color("#9a6bd1"), 1.0, [0.0; 4]);
-                    }
-                    Festival::Birthday => {
-                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.54, 0.21))), view, hex_color("#ee8fb4"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.16, 0.21))), view, hex_color("#70c4b8"), 1.0, [0.0; 4]);
-                        self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.54, 0.0), Vec3::ZERO, Vec3::splat(1.15))), view, hex_color("#f2c94c"), 1.0, [0.0; 4]);
-                    }
-                    _ => {}
                 }
             }
 
@@ -955,35 +1054,40 @@ mod imp {
 
             // ===== Order 40~45: 2D Billboard Sprites =====
             if !scene.sprites.is_empty() {
-                unsafe {
-                    self.ctx.IASetInputLayout(None);
-                    self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-                    self.ctx.VSSetShader(&self.vs_sprite, None);
-                    self.ctx.PSSetShader(&self.ps_sprite, None);
-                    self.ctx.RSSetState(&self.rs_none);
-                    self.ctx.OMSetDepthStencilState(&self.ds_none, 0);
-                    self.ctx.OMSetBlendState(&self.blend_premul, None, u32::MAX);
-                    self.ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+                if self.atlas.is_none() {
+                    self.atlas = SpriteAtlas::new().ok();
                 }
-                for sp in &scene.sprites {
-                    let Some(srv) = self.atlas.get_or_bake(&self.device, &sp.key) else { continue };
-                    let mut m = Mat4::IDENTITY;
-                    m.cols[3] = [sp.pos.x, sp.pos.y, sp.pos.z, 1.0];
-                    let obj = ObjCB {
-                        model: m.to_cols_array_2d(),
-                        normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
-                        color: [1.0, 1.0, 1.0, sp.opacity],
-                        params: [sp.scale_x, sp.scale_y, 0.0, 0.0],
-                    };
-                    write_struct(&self.ctx, &self.cb_obj, &obj);
+                if let Some(ref mut atlas) = self.atlas {
                     unsafe {
-                        self.ctx.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
-                        self.ctx.Draw(4, 0);
+                        self.ctx.IASetInputLayout(None);
+                        self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                        self.ctx.VSSetShader(&self.vs_sprite, None);
+                        self.ctx.PSSetShader(&self.ps_sprite, None);
+                        self.ctx.RSSetState(&self.rs_none);
+                        self.ctx.OMSetDepthStencilState(&self.ds_none, 0);
+                        self.ctx.OMSetBlendState(&self.blend_premul, None, u32::MAX);
+                        self.ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
                     }
-                }
-                unsafe {
-                    self.ctx.PSSetShaderResources(0, Some(&[None]));
-                    self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    for sp in &scene.sprites {
+                        let Some(srv) = atlas.get_or_bake(&self.device, &sp.key) else { continue };
+                        let mut m = Mat4::IDENTITY;
+                        m.cols[3] = [sp.pos.x, sp.pos.y, sp.pos.z, 1.0];
+                        let obj = ObjCB {
+                            model: m.to_cols_array_2d(),
+                            normal_mat: Mat4::IDENTITY.to_cols_array_2d(),
+                            color: [1.0, 1.0, 1.0, sp.opacity],
+                            params: [sp.scale_x, sp.scale_y, 0.0, 0.0],
+                        };
+                        write_struct(&self.ctx, &self.cb_obj, &obj);
+                        unsafe {
+                            self.ctx.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
+                            self.ctx.Draw(4, 0);
+                        }
+                    }
+                    unsafe {
+                        self.ctx.PSSetShaderResources(0, Some(&[None]));
+                        self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    }
                 }
             }
 
@@ -1113,59 +1217,105 @@ mod imp {
         }
     }
 
-    fn compile_shader(entry: &str, target: &str) -> Result<ID3DBlob> {
-        let mut blob = None;
-        let mut err = None;
-        let res = unsafe {
-            D3DCompile(
-                SHADERS_SRC.as_ptr() as *const c_void,
-                SHADERS_SRC.len(),
-                PCSTR::null(),
-                None,
-                None,
-                PCSTR(entry.as_ptr()),
-                PCSTR(target.as_ptr()),
-                0,
-                0,
-                &mut blob,
-                Some(&mut err),
-            )
-        };
-        if let Err(e) = res {
-            if let Some(err_blob) = err {
-                let msg = unsafe {
-                    let bytes = std::slice::from_raw_parts(
-                        err_blob.GetBufferPointer() as *const u8,
-                        err_blob.GetBufferSize(),
-                    );
-                    String::from_utf8_lossy(bytes).into_owned()
+    type FnD3DCompile = unsafe extern "system" fn(
+        *const c_void,
+        usize,
+        PCSTR,
+        *const c_void,
+        *const c_void,
+        PCSTR,
+        PCSTR,
+        u32,
+        u32,
+        *mut Option<ID3DBlob>,
+        *mut Option<ID3DBlob>,
+    ) -> HRESULT;
+
+    struct ShaderCompiler {
+        module: HMODULE,
+        compile_fn: FnD3DCompile,
+    }
+
+    impl ShaderCompiler {
+        fn load() -> Result<Self> {
+            unsafe {
+                let module = LoadLibraryW(w!("d3dcompiler_47.dll"))
+                    .or_else(|_| LoadLibraryW(w!("d3dcompiler_43.dll")))?;
+                let Some(proc) = GetProcAddress(module, s!("D3DCompile")) else {
+                    let _ = FreeLibrary(module);
+                    return Err(Error::from_thread());
                 };
-                if let Some(dir) = std::env::var_os("APPDATA") {
-                    let p = std::path::PathBuf::from(dir).join("com.ellobok.keycat");
-                    let _ = std::fs::create_dir_all(&p);
-                    let _ = std::fs::write(p.join("native-error.txt"), format!("HLSL ({entry}): {msg}\n"));
-                }
+                Ok(Self {
+                    module,
+                    compile_fn: mem::transmute::<*const c_void, FnD3DCompile>(proc as *const c_void),
+                })
             }
-            return Err(e);
         }
-        Ok(blob.unwrap())
+
+        fn compile(&self, entry: &str, target: &str) -> Result<Vec<u8>> {
+            let mut blob: Option<ID3DBlob> = None;
+            let mut err: Option<ID3DBlob> = None;
+            let hr = unsafe {
+                (self.compile_fn)(
+                    SHADERS_SRC.as_ptr() as *const c_void,
+                    SHADERS_SRC.len(),
+                    PCSTR::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    PCSTR(entry.as_ptr()),
+                    PCSTR(target.as_ptr()),
+                    0,
+                    0,
+                    &mut blob,
+                    &mut err,
+                )
+            };
+            if hr.is_err() {
+                if let Some(err_blob) = err.take() {
+                    let msg = unsafe {
+                        let bytes = std::slice::from_raw_parts(
+                            err_blob.GetBufferPointer() as *const u8,
+                            err_blob.GetBufferSize(),
+                        );
+                        String::from_utf8_lossy(bytes).into_owned()
+                    };
+                    drop(err_blob);
+                    if let Some(dir) = std::env::var_os("APPDATA") {
+                        let p = std::path::PathBuf::from(dir).join("com.ellobok.keycat");
+                        let _ = std::fs::create_dir_all(&p);
+                        let _ = std::fs::write(p.join("native-error.txt"), format!("HLSL ({entry}): {msg}\n"));
+                    }
+                }
+                drop(blob);
+                return Err(Error::from_hresult(hr));
+            }
+            drop(err);
+            let b = blob.expect("D3DCompile succeeded without blob");
+            let out = unsafe {
+                std::slice::from_raw_parts(b.GetBufferPointer() as *const u8, b.GetBufferSize()).to_vec()
+            };
+            drop(b);
+            Ok(out)
+        }
     }
 
-    fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize())
+    impl Drop for ShaderCompiler {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = FreeLibrary(self.module);
+            }
         }
     }
 
-    fn create_vs(device: &ID3D11Device, blob: &ID3DBlob) -> Result<ID3D11VertexShader> {
+    fn create_vs(device: &ID3D11Device, bytecode: &[u8]) -> Result<ID3D11VertexShader> {
         let mut vs = None;
-        unsafe { device.CreateVertexShader(blob_bytes(blob), None, Some(&mut vs))? };
+        unsafe { device.CreateVertexShader(bytecode, None, Some(&mut vs))? };
         Ok(vs.unwrap())
     }
 
-    fn create_ps(device: &ID3D11Device, blob: &ID3DBlob) -> Result<ID3D11PixelShader> {
+    fn create_ps(device: &ID3D11Device, bytecode: &[u8]) -> Result<ID3D11PixelShader> {
         let mut ps = None;
-        unsafe { device.CreatePixelShader(blob_bytes(blob), None, Some(&mut ps))? };
+        unsafe { device.CreatePixelShader(bytecode, None, Some(&mut ps))? };
         Ok(ps.unwrap())
     }
 

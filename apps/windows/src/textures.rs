@@ -38,6 +38,7 @@ mod imp {
         d2d: ID2D1Factory,
         dwrite: IDWriteFactory,
         cache: HashMap<SpriteKey, ID3D11ShaderResourceView>,
+        latest_bubble: Option<(String, ID3D11ShaderResourceView)>,
     }
 
     fn rgba(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
@@ -59,7 +60,7 @@ mod imp {
                 unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
             let dwrite: IDWriteFactory =
                 unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-            Ok(Self { d2d, dwrite, cache: HashMap::new() })
+            Ok(Self { d2d, dwrite, cache: HashMap::new(), latest_bubble: None })
         }
 
         pub fn get_or_bake(
@@ -67,6 +68,17 @@ mod imp {
             device: &ID3D11Device,
             key: &SpriteKey,
         ) -> Option<&ID3D11ShaderResourceView> {
+            if let SpriteKey::Bubble(text) = key {
+                let matches = self
+                    .latest_bubble
+                    .as_ref()
+                    .is_some_and(|(cached, _)| cached == text);
+                if !matches {
+                    let srv = self.bake(device, key).ok()?;
+                    self.latest_bubble = Some((text.clone(), srv));
+                }
+                return self.latest_bubble.as_ref().map(|(_, srv)| srv);
+            }
             if !self.cache.contains_key(key) {
                 if let Ok(srv) = self.bake(device, key) {
                     self.cache.insert(key.clone(), srv);

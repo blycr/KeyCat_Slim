@@ -39,6 +39,11 @@ final class UpdateChecker {
         }
     }
 
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
     func check() {
         guard state != .checking else { return }
         state = .checking

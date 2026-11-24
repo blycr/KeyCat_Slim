@@ -417,7 +417,9 @@ mod win_app {
                 }
                 self.scene.hit = HitZone::None;
                 self.update_click_target();
+                self.audio.sync(false, 0.0, 0.0);
                 unsafe { let _ = ShowWindow(self.hwnd, SW_HIDE); }
+                self.renderer.release_targets_and_trim();
             }
         }
 

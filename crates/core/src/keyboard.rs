@@ -354,17 +354,20 @@ impl Keyboard {
     }
 
     pub fn random_letter(&self, r01: f32) -> Option<usize> {
-        let letters: Vec<usize> = self
+        let count = self
             .keys
             .iter()
             .filter(|k| k.code.starts_with("Key") && k.code.len() == 4)
-            .map(|k| k.idx)
-            .collect();
-        if letters.is_empty() {
+            .count();
+        if count == 0 {
             return None;
         }
-        let pick = ((r01 * letters.len() as f32) as usize).min(letters.len() - 1);
-        Some(letters[pick])
+        let target = ((r01 * count as f32) as usize).min(count - 1);
+        self.keys
+            .iter()
+            .filter(|k| k.code.starts_with("Key") && k.code.len() == 4)
+            .nth(target)
+            .map(|k| k.idx)
     }
 
     pub fn key_top(&self, idx: usize) -> Vec3 {
@@ -601,6 +604,7 @@ pub struct CupProp {
     pub steam_opacity_a: f32,
     pub steam_opacity_b: f32,
     pub steam_dirty: bool,
+    last_steam_t: f32,
 }
 
 impl CupProp {
@@ -628,6 +632,7 @@ impl CupProp {
             steam_opacity_a: 0.0,
             steam_opacity_b: 0.0,
             steam_dirty: true,
+            last_steam_t: -100.0,
         };
         cup.update_steam(0.0, 1.0);
         cup
@@ -657,8 +662,14 @@ impl CupProp {
         if !self.visible() || calm <= 0.02 {
             self.steam_opacity_a = 0.0;
             self.steam_opacity_b = 0.0;
+            self.last_steam_t = -100.0;
             return;
         }
+        // Steam drifts gently; updating at ~15 Hz is visually smooth while slashing CPU & GPU uploads.
+        if (t - self.last_steam_t).abs() < 0.066 {
+            return;
+        }
+        self.last_steam_t = t;
         let world = self.world_matrix();
         let update_one = |tube: &mut TaperTube, x_off: f32, phase: f32| -> f32 {
             let life = ((t * 0.42 + phase) % 1.0 + 1.0) % 1.0;

@@ -2,8 +2,8 @@ import AVFoundation
 import Foundation
 
 /// Procedural cat purr audio driver backed by `keycat-core`'s DSP synth via `keycat-ffi`.
-/// Starts `AVAudioEngine` lazily only when sound is enabled and the cat is actively purring,
-/// and pauses the engine shortly after purring fades to silence so CoreAudio stays idle.
+/// Allocates neither `KcAudio` nor `AVAudioEngine` until sound is enabled and the cat purrs,
+/// and tears down the engine cleanly after silence so CoreAudio holds zero idle resources.
 final class PurrAudio {
     private var audioPtr: OpaquePointer?
     private var engine: AVAudioEngine?
@@ -11,15 +11,16 @@ final class PurrAudio {
     private var isRunning = false
     private var silentTicks = 0
 
-    init() {
-        self.audioPtr = kc_audio_new(48_000)
-    }
+    init() {}
 
     deinit {
         stop()
     }
 
     func sync(scene: OpaquePointer) {
+        if audioPtr == nil {
+            audioPtr = kc_audio_new(48_000)
+        }
         guard let ptr = audioPtr else { return }
         let active = kc_audio_sync_from_scene(ptr, scene) != 0
         if active {
@@ -30,7 +31,7 @@ final class PurrAudio {
         } else if isRunning {
             silentTicks += 1
             if silentTicks >= 90 {
-                stopEngine()
+                teardownEngine()
             }
         }
     }
@@ -68,29 +69,29 @@ final class PurrAudio {
             try eng.start()
             isRunning = true
         } catch {
-            isRunning = false
+            teardownEngine()
         }
     }
 
-    private func stopEngine() {
+    private func teardownEngine() {
         if let eng = engine {
             eng.stop()
+            if let node = sourceNode {
+                eng.detach(node)
+            }
         }
+        sourceNode = nil
+        engine = nil
         isRunning = false
         silentTicks = 0
     }
 
     func pause() {
-        stopEngine()
+        teardownEngine()
     }
 
     func stop() {
-        stopEngine()
-        if let eng = engine, let node = sourceNode {
-            eng.detach(node)
-        }
-        sourceNode = nil
-        engine = nil
+        teardownEngine()
         if let ptr = audioPtr {
             kc_audio_free(ptr)
             audioPtr = nil
