@@ -6,9 +6,9 @@
 
 ![KeyCat](docs/screenshots/keycat.gif)
 
-## 推荐版本：v2.1.0
+## 推荐版本：v2.1.1
 
-建议直接安装最新的 [v2.1.0](https://github.com/blycr/KeyCat_Slim/releases/latest)，主要原因如下：
+建议直接安装最新的 [v2.1.1](https://github.com/blycr/KeyCat_Slim/releases/latest)，主要原因如下：
 
 - **双端全面原生化**：Windows 端（Direct3D 11 + DirectComposition）和 macOS 端（Metal + AppKit）现已全部移除 WebView2 与 WKWebView，共用同一套跨平台 Rust 核心引擎（`native/core`），在保持原有观感和流畅度的同时，内存与 CPU 占用大幅下降。
 - **更合理的帧率控制**：菜单新增「自动」帧率档位（默认开启），活跃时最高 60 fps（显示器低于 60 Hz 时取显示器刷新率），发呆或睡着时自动降帧省电；手动选固定档位时则严格锁定，不再私自降帧。

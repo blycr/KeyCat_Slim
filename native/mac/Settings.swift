@@ -152,10 +152,12 @@ private final class WarmActionButton: NSView {
         labelField.stringValue = feedbackTitle
         needsDisplay = true
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.showingFeedback = false
-            self.labelField.stringValue = self.baseTitle
-            self.needsDisplay = true
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.showingFeedback = false
+                self.labelField.stringValue = self.baseTitle
+                self.needsDisplay = true
+            }
         }
         feedbackWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)

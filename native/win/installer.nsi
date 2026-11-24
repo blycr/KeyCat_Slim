@@ -6,7 +6,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !ifndef VERSION
-  !define VERSION "2.1.0"
+  !define VERSION "2.1.1"
 !endif
 !ifndef EXE_PATH
   !define EXE_PATH "..\target\release\KeyCat.exe"

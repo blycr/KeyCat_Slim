@@ -263,7 +263,7 @@ mod imp {
             add_item(root, CMD_HOME, "回到右下角", false);
             add_item(root, CMD_VISIBILITY, if st.visible { "隐藏" } else { "显示" }, false);
             add_sep(root);
-            add_note(root, "KeyCat v2.1.0");
+            add_note(root, "KeyCat v2.1.1");
             if !st.hook_ready {
                 add_note(root, "键盘监听未启动");
             }
