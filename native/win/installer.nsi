@@ -1,5 +1,5 @@
 ﻿; NSIS per-user installer for KeyCat Native (Windows, zero WebView2).
-; Build: makensis /DVERSION=2.0.0 /DEXE_PATH=..\target\release\KeyCat.exe /DOUT_FILE=..\..\dist\KeyCat-Native-Setup.exe installer.nsi
+; Build: makensis -INPUTCHARSET UTF8 -DVERSION=2.0.0 -DEXE_PATH=..\target\release\KeyCat.exe -DOUT_FILE=..\..\dist\KeyCat-Windows-Setup.exe installer.nsi
 
 Unicode true
 !include "MUI2.nsh"
@@ -12,7 +12,7 @@ Unicode true
   !define EXE_PATH "..\target\release\KeyCat.exe"
 !endif
 !ifndef OUT_FILE
-  !define OUT_FILE "..\..\dist\KeyCat-Native-Setup.exe"
+  !define OUT_FILE "..\..\dist\KeyCat-Windows-Setup.exe"
 !endif
 
 !define APP_NAME "KeyCat"

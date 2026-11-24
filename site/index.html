@@ -174,7 +174,7 @@
 <div class="wrap">
   <header>
     <a class="brand" href="./"><span>🐈‍⬛</span>KeyCat</a>
-    <a class="gh" href="https://github.com/ElloboDK/KeyCat">
+    <a class="gh" href="https://github.com/blycr/KeyCat_Slim">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
     </a>
@@ -186,7 +186,7 @@
         <h1>一只趴在<br>你<em>键盘</em>上的猫</h1>
         <p class="lede">你打字，它伸爪按键；你晃鼠标，它扭头盯着看；摸摸头会眯眼，没人理就睡着，烦到了会用尾巴捶桌。免费，不联网，不记录你输入的内容。</p>
         <div class="cta">
-          <a class="btn" id="dl" href="https://github.com/ElloboDK/KeyCat/releases/latest">
+          <a class="btn" id="dl" href="https://github.com/blycr/KeyCat_Slim/releases/latest">
             <svg id="dl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
             <span><b id="dl-label">免费下载</b><small id="dl-sub">macOS 13+ · Windows 10+</small></span>
           </a>
@@ -227,37 +227,37 @@
           <div class="req">macOS 13 及以上，Intel 和 Apple 芯片都支持</div>
           <ol>
             <li><b>推荐：</b>打开「终端」，粘贴这行命令回车，会装到「应用程序」并打开：
-              <div class="cmd"><pre id="mac-cmd">curl -L -o /tmp/KeyCat-macOS.zip https://github.com/ElloboDK/KeyCat/releases/latest/download/KeyCat-macOS.zip &amp;&amp; unzip -qo /tmp/KeyCat-macOS.zip -d /Applications &amp;&amp; open /Applications/KeyCat.app</pre><button class="copy" data-copy="mac-cmd">复制</button></div>
+              <div class="cmd"><pre id="mac-cmd">curl -L -o /tmp/KeyCat-macOS.zip https://github.com/blycr/KeyCat_Slim/releases/latest/download/KeyCat-macOS.zip &amp;&amp; unzip -qo /tmp/KeyCat-macOS.zip -d /Applications &amp;&amp; open /Applications/KeyCat.app</pre><button class="copy" data-copy="mac-cmd">复制</button></div>
             </li>
             <li>首次启动在「系统设置 → 隐私与安全性 → 输入监控」里允许 KeyCat，再重新打开它。</li>
             <li>用浏览器下载的话，解压后拖进「应用程序」；提示「已损坏」时在终端执行 <code>xattr -dr com.apple.quarantine /Applications/KeyCat.app</code>。</li>
           </ol>
-          <a class="dl" href="https://github.com/ElloboDK/KeyCat/releases/latest/download/KeyCat-macOS.zip">下载 KeyCat-macOS.zip</a>
+          <a class="dl" href="https://github.com/blycr/KeyCat_Slim/releases/latest/download/KeyCat-macOS.zip">下载 KeyCat-macOS.zip</a>
         </div>
         <div class="os" id="os-win">
           <h3>Windows <span class="tag" hidden>你的系统</span></h3>
-          <div class="req">Windows 10 / 11，安装包只有几 MB</div>
+          <div class="req">Windows 10 / 11（64 位），安装程序不到 400 KB，无需 WebView2</div>
           <ol>
-            <li>下载 <code>KeyCat-Windows-Setup.exe</code> 并运行。</li>
+            <li>下载 <code>KeyCat-Windows-Setup.exe</code> 并运行安装。</li>
             <li>SmartScreen 拦截时点「更多信息 → 仍要运行」。</li>
             <li>猫住在托盘里，右键猫或托盘图标打开菜单。玩游戏时猫没反应，就在菜单里打开「以管理员身份运行」。</li>
           </ol>
-          <a class="dl" href="https://github.com/ElloboDK/KeyCat/releases/latest/download/KeyCat-Windows-Setup.exe">下载 KeyCat-Windows-Setup.exe</a>
+          <a class="dl" href="https://github.com/blycr/KeyCat_Slim/releases/latest/download/KeyCat-Windows-Setup.exe">下载 KeyCat-Windows-Setup.exe</a>
         </div>
       </div>
     </section>
   </main>
 
   <footer>
-    <p>两个平台都会自动更新，装一次就好。历史版本见 <a href="https://github.com/ElloboDK/KeyCat/releases">Releases</a>。</p>
-    <p>KeyCat 是个人学习项目，仅供个人使用和交流，不用于商业分发。</p>
+    <p>历史版本见 <a href="https://github.com/blycr/KeyCat_Slim/releases">Releases</a>。</p>
+    <p>基于 <a href="https://github.com/ElloboDK/KeyCat">ElloboDK/KeyCat</a> 轻量化重构，仅供个人使用和交流，不用于商业分发。</p>
   </footer>
 </div>
 
 <script>
 'use strict';
 (() => {
-  const REPO = 'ElloboDK/KeyCat';
+  const REPO = 'blycr/KeyCat_Slim';
   const LATEST = `https://github.com/${REPO}/releases/latest/download/`;
   const $ = id => document.getElementById(id);
 

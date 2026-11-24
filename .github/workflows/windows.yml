@@ -1,8 +1,7 @@
-name: Windows
+name: Windows (Legacy WebView2)
 
-# Builds the Tauri NSIS installer in win/ on a Windows runner.
-# Tag pushes (or workflow_dispatch with a tag) upload KeyCat-Windows-Setup.exe (+ .sha256,
-# plus latest.json / latest.yml when TAURI_SIGNING_PRIVATE_KEY is configured).
+# Builds the legacy Tauri WebView2 installer in win/ on demand or when win/ or web/ changes.
+# v2.0.0+ releases ship the native Windows installer from native-windows.yml instead.
 on:
   push:
     branches: [main]
@@ -10,7 +9,6 @@ on:
       - 'win/**'
       - 'web/**'
       - '.github/workflows/windows.yml'
-    tags: ['v*']
   pull_request:
     paths:
       - 'win/**'
@@ -19,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and upload (e.g. v1.1.1); leave empty to build current branch only'
+        description: 'Optional tag to build legacy WebView2 installer for (uploads as artifact only)'
         required: false
         default: ''
 
@@ -109,25 +107,8 @@ jobs:
           '
           cat out/latest.json out/latest.yml
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          TAG="$INPUT_TAG"
-          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="$GITHUB_REF_NAME"
-          fi
-          [ -n "$TAG" ] || exit 0
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --title "$TAG" --generate-notes
-          FILES=(out/KeyCat-Windows-Setup.exe out/KeyCat-Windows-Setup.exe.sha256)
-          [ -f out/latest.json ] && FILES+=(out/latest.json)
-          [ -f out/latest.yml ] && FILES+=(out/latest.yml)
-          gh release upload "$TAG" "${FILES[@]}" --clobber
-
       - uses: actions/upload-artifact@v4
         with:
-          name: keycat-windows
+          name: keycat-windows-legacy
           path: win/out/*
           if-no-files-found: error
