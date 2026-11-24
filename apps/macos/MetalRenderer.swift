@@ -134,9 +134,8 @@ final class MetalRenderer {
         guard mv.vertex_count > 0, let vp = mv.vertices else { return }
         let vBytes = Int(mv.vertex_count) * MemoryLayout<KcVertex>.stride
         let idx = Int(id)
-        if var dm = dynMeshes[idx], dm.capacityBytes >= vBytes {
+        if let dm = dynMeshes[idx], dm.capacityBytes >= vBytes {
             memcpy(dm.vb.contents(), vp, vBytes)
-            dynMeshes[idx] = dm
         } else if let fresh = uploadDynamic(mv) {
             dynMeshes[idx] = fresh
         }

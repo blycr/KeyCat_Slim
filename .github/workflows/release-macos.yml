@@ -20,16 +20,16 @@ on:
         required: false
         default: ''
       runner:
-        description: 'macOS runner label (default: macos-latest; fallback: macos-15-intel)'
+        description: 'macOS runner label (default: macos-15-intel)'
         required: false
-        default: 'macos-latest'
+        default: 'macos-15-intel'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ${{ inputs.runner || 'macos-latest' }}
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     steps:
       - uses: actions/checkout@v4
         with:

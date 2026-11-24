@@ -1,8 +1,13 @@
 #!/bin/sh
 # Signs $1 with a local self-signed identity kept in signing/ at the repo root (gitignored).
+# In ephemeral CI environments (CI=true), uses ad-hoc signing directly to avoid keychain issues.
 set -eu
 cd "$(dirname "$0")/../.."
 APP="$1"
+if [ "${CI:-}" = "true" ]; then
+    codesign --force --sign - --identifier com.local.keycat "$APP"
+    exit 0
+fi
 DIR="$PWD/signing"
 KC="$DIR/KeyCat.keychain-db"
 NAME="KeyCat Local Signing"
