@@ -73,6 +73,12 @@ jobs:
           build/KeyCat.app/Contents/MacOS/KeyCat --smoke-test dist/smoke.png
           ls -lh dist
 
+      - name: Verify Homebrew Cask syntax
+        run: |
+          brew tap blycr/tap https://github.com/blycr/homebrew-tap
+          brew info --cask blycr/tap/keycat
+          brew style blycr/tap/keycat
+
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

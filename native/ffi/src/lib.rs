@@ -681,7 +681,9 @@ pub unsafe extern "C" fn kc_scene_on_key(s: *mut KcScene, code: *const c_char, d
 pub unsafe extern "C" fn kc_scene_on_cursor(s: *mut KcScene, x: f32, y: f32) -> u32 {
     if let Some(s) = s.as_mut() {
         s.scene.on_cursor(x, y);
-        return hit_to_u32(s.scene.hit);
+        let hit = s.scene.hit_test(x, y);
+        s.scene.hit = hit;
+        return hit_to_u32(hit);
     }
     KC_HIT_NONE
 }
@@ -995,7 +997,12 @@ mod tests {
 
             let key_f = CString::new("KeyF").unwrap();
             kc_scene_on_key(s, key_f.as_ptr(), 1);
-            kc_scene_step(s, 1.0 / 60.0);
+            for _ in 0..10 {
+                kc_scene_step(s, 1.0 / 60.0);
+            }
+            assert_eq!(kc_scene_on_cursor(s, 171.0, 135.0), KC_HIT_PET);
+            assert_eq!(kc_scene_on_cursor(s, 171.0, 240.0), KC_HIT_DRAG);
+            assert_eq!(kc_scene_on_cursor(s, 20.0, 20.0), KC_HIT_NONE);
             let frame = kc_scene_prepare_frame(s);
             assert!(frame.draw_count >= 50, "expected full draw list, got {}", frame.draw_count);
             assert!(frame.sprite_count >= 1, "expected key popup sprite");

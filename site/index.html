@@ -224,13 +224,13 @@
       <div class="install">
         <div class="os" id="os-mac">
           <h3>macOS <span class="tag" hidden>你的系统</span></h3>
-          <div class="req">macOS 13 及以上，Intel 和 Apple 芯片都支持</div>
+          <div class="req">macOS 13 及以上，原生 Metal 渲染，Apple Silicon 和 Intel 通用</div>
           <ol>
-            <li><b>推荐：</b>打开「终端」，粘贴这行命令回车，会装到「应用程序」并打开：
-              <div class="cmd"><pre id="mac-cmd">curl -L -o /tmp/KeyCat-macOS.zip https://github.com/blycr/KeyCat_Slim/releases/latest/download/KeyCat-macOS.zip &amp;&amp; unzip -qo /tmp/KeyCat-macOS.zip -d /Applications &amp;&amp; open /Applications/KeyCat.app</pre><button class="copy" data-copy="mac-cmd">复制</button></div>
+            <li><b>推荐（Homebrew）：</b>打开「终端」，粘贴这行命令回车：
+              <div class="cmd"><pre id="mac-cmd">brew install --cask --no-quarantine blycr/tap/keycat</pre><button class="copy" data-copy="mac-cmd">复制</button></div>
             </li>
             <li>首次启动在「系统设置 → 隐私与安全性 → 输入监控」里允许 KeyCat，再重新打开它。</li>
-            <li>用浏览器下载的话，解压后拖进「应用程序」；提示「已损坏」时在终端执行 <code>xattr -dr com.apple.quarantine /Applications/KeyCat.app</code>。</li>
+            <li>也可以手动下载压缩包解压拖进「应用程序」；若提示「已损坏」，在终端执行 <code>xattr -dr com.apple.quarantine /Applications/KeyCat.app</code>。</li>
           </ol>
           <a class="dl" href="https://github.com/blycr/KeyCat_Slim/releases/latest/download/KeyCat-macOS.zip">下载 KeyCat-macOS.zip</a>
         </div>
