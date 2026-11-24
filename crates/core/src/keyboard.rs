@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::geometry::{
-    circle, cylinder_open, full_sphere, plane, rounded_slab, sphere, MeshData, TaperTube,
+    circle, cylinder_capped, cylinder_open, full_sphere, plane, rounded_slab, sphere, torus,
+    MeshData, TaperTube,
 };
 use crate::math::{approach, hex_color, mix, smooth, Mat4, Spring3, Vec3, PI, SQRT_1_2, TAU};
 
@@ -45,13 +46,54 @@ pub struct KeyState {
     pub z: f32,
     pub sx: f32,
     pub down: bool,
+    pub weight: f32,
     pub glow: f32,
     pub depth: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KeyboardTheme {
+    pub tops: [&'static str; 3],
+    pub sides: [&'static str; 3],
+    pub case: &'static str,
+    pub plate: &'static str,
+}
+
+pub fn keyboard_theme(name: &str) -> KeyboardTheme {
+    match name {
+        "dark" => KeyboardTheme {
+            tops: ["#4a4a46", "#383835", "#e9b064"],
+            sides: ["#353532", "#2a2a28", "#c08a42"],
+            case: "#1b1b1a",
+            plate: "#222221",
+        },
+        "pink" => KeyboardTheme {
+            tops: ["#fdeef2", "#f6cdd9", "#ee8fb4"],
+            sides: ["#efd5dd", "#e2b2c1", "#d6779d"],
+            case: "#6b3f4e",
+            plate: "#774857",
+        },
+        "mint" => KeyboardTheme {
+            tops: ["#eef8f2", "#c9e8d9", "#72c3a1"],
+            sides: ["#d4ebdf", "#aed6c4", "#55a585"],
+            case: "#2f4a40",
+            plate: "#375449",
+        },
+        _ => KeyboardTheme {
+            tops: ["#f8f7ef", "#e0ddd2", "#e9b064"],
+            sides: ["#e6e3d8", "#cbc7ba", "#d39a4e"],
+            case: "#252523",
+            plate: "#2b2b28",
+        },
+    }
 }
 
 pub struct Keyboard {
     pub pos: Vec3,
     pub rot_x: f32,
+    pub theme: String,
+    pub case_color: [f32; 3],
+    pub plate_color: [f32; 3],
     pub case_mesh: MeshData,
     pub case_rim: MeshData,
     pub plate_mesh: MeshData,
@@ -185,7 +227,7 @@ impl Keyboard {
                 code_to_idx.insert(code, idx);
                 let k = KeyState {
                     idx, code, label, kind, base_color, side_color, x, z, sx,
-                    down: false, glow: 0.0, depth: 0.0,
+                    down: false, weight: 0.0, glow: 0.0, depth: 0.0,
                 };
                 let (m_cap, m_dot) = key_matrices(&k);
                 side_instances.push(KeyInstance {
@@ -204,9 +246,13 @@ impl Keyboard {
             }
         }
 
+        let th = keyboard_theme("cream");
         Self {
             pos: Vec3::new(0.28, 0.02, 1.0),
             rot_x: 0.06,
+            theme: "cream".into(),
+            case_color: hex_color(th.case),
+            plate_color: hex_color(th.plate),
             case_mesh,
             case_rim,
             plate_mesh,
@@ -252,11 +298,73 @@ impl Keyboard {
 
     pub fn release_all(&mut self) {
         for i in 0..self.keys.len() {
-            if self.keys[i].down {
+            if self.keys[i].down || self.keys[i].weight > 0.0 {
                 self.keys[i].down = false;
+                self.keys[i].weight = 0.0;
                 self.active_keys.insert(i);
             }
         }
+    }
+
+    pub fn set_theme(&mut self, name: &str) {
+        let canonical = match name {
+            "dark" | "pink" | "mint" => name,
+            _ => "cream",
+        };
+        if self.theme == canonical {
+            return;
+        }
+        self.theme = canonical.to_string();
+        let th = keyboard_theme(canonical);
+        self.case_color = hex_color(th.case);
+        self.plate_color = hex_color(th.plate);
+        let tops = [hex_color(th.tops[0]), hex_color(th.tops[1]), hex_color(th.tops[2])];
+        let sides = [hex_color(th.sides[0]), hex_color(th.sides[1]), hex_color(th.sides[2])];
+        let hit = hex_color("#b9d84f");
+        for (idx, k) in self.keys.iter_mut().enumerate() {
+            let ti = match k.kind {
+                KeyKind::Base => 0,
+                KeyKind::Mod => 1,
+                KeyKind::Orange => 2,
+            };
+            k.base_color = tops[ti];
+            k.side_color = sides[ti];
+            self.side_instances[idx].color = [sides[ti][0], sides[ti][1], sides[ti][2], 1.0];
+            self.top_instances[idx].color = [
+                mix(k.base_color[0], hit[0], k.glow),
+                mix(k.base_color[1], hit[1], k.glow),
+                mix(k.base_color[2], hit[2], k.glow),
+                1.0,
+            ];
+        }
+        self.instances_dirty = true;
+    }
+
+    /// Depresses keys under a cat sprawling across the board without lighting them up.
+    pub fn weigh(&mut self, cx: f32, half: f32) {
+        let bx = self.pos.x;
+        for i in 0..self.keys.len() {
+            let wx = self.keys[i].x + bx;
+            let want = if half > 0.0 && (wx - cx).abs() < half { 1.0 } else { 0.0 };
+            if (self.keys[i].weight - want).abs() > 1e-3 {
+                self.keys[i].weight = want;
+                self.active_keys.insert(i);
+            }
+        }
+    }
+
+    pub fn random_letter(&self, r01: f32) -> Option<usize> {
+        let letters: Vec<usize> = self
+            .keys
+            .iter()
+            .filter(|k| k.code.starts_with("Key") && k.code.len() == 4)
+            .map(|k| k.idx)
+            .collect();
+        if letters.is_empty() {
+            return None;
+        }
+        let pick = ((r01 * letters.len() as f32) as usize).min(letters.len() - 1);
+        Some(letters[pick])
     }
 
     pub fn key_top(&self, idx: usize) -> Vec3 {
@@ -273,11 +381,11 @@ impl Keyboard {
         let mut finished = Vec::new();
         for &idx in &self.active_keys {
             let k = &mut self.keys[idx];
-            let target_d = if k.down { 0.032 } else { 0.0 };
+            let target_d = if k.down { 0.032 } else { 0.02 * k.weight };
             k.depth += (target_d - k.depth) * approach(if k.down { 60.0 } else { 24.0 }, dt);
             let target_g = if k.down { 1.0 } else { 0.0 };
             k.glow += (target_g - k.glow) * approach(if k.down { 40.0 } else { 5.0 }, dt);
-            if !k.down && k.depth < 1e-4 && k.glow < 1e-4 {
+            if !k.down && k.weight == 0.0 && k.depth < 1e-4 && k.glow < 1e-4 {
                 k.depth = 0.0;
                 k.glow = 0.0;
                 finished.push(idx);
@@ -326,6 +434,7 @@ pub struct MouseProp {
     pub seam: TaperTube,
     pub button_geo: MeshData,
     pub cable: TaperTube,
+    pub cable_visible: bool,
     pub cable_dirty: bool,
     last_cable_start: Vec3,
     cable_init: bool,
@@ -380,6 +489,7 @@ impl MouseProp {
             seam,
             button_geo,
             cable,
+            cable_visible: true,
             cable_dirty: true,
             last_cable_start: Vec3::ZERO,
             cable_init: false,
@@ -470,4 +580,110 @@ fn mouse_on_top(x: f32, z: f32) -> f32 {
     let denom = MW * (1.0 - 0.14 * z / ML);
     let inside = (1.0 - (x / denom).powi(2) - (z / ML).powi(2)).max(0.0);
     MH * (1.0 - 0.18 * z / ML) * inside.sqrt()
+}
+
+pub const CUP_HOME: Vec3 = Vec3::new(-1.0, 0.02, -0.28);
+pub const CUP_R: f32 = 0.145;
+pub const CUP_H: f32 = 0.28;
+
+/// Desk coffee mug that the cat can idly push off the desk edge.
+pub struct CupProp {
+    pub enabled: bool,
+    pub pos: Vec3,
+    pub rot: Vec3,
+    pub opacity: f32,
+    pub body_geo: MeshData,
+    pub rim_geo: MeshData,
+    pub handle_geo: MeshData,
+    pub coffee_geo: MeshData,
+    pub steam_a: TaperTube,
+    pub steam_b: TaperTube,
+    pub steam_opacity_a: f32,
+    pub steam_opacity_b: f32,
+    pub steam_dirty: bool,
+}
+
+impl CupProp {
+    pub fn new() -> Self {
+        let mut body_geo = cylinder_capped(CUP_R, CUP_R * 0.88, CUP_H, 28);
+        body_geo.translate(0.0, CUP_H * 0.5, 0.0);
+        let mut rim_geo = cylinder_capped(CUP_R + 0.016, CUP_R * 0.88 + 0.016, CUP_H + 0.022, 28);
+        rim_geo.translate(0.0, CUP_H * 0.5, 0.0);
+        let handle_geo = torus(0.082, 0.021, 12, 20);
+        let mut coffee_geo = circle(CUP_R * 0.86, 24, 0.0, TAU);
+        coffee_geo.rotate_x(-PI * 0.5);
+        let steam_a = TaperTube::new(12, 5, false);
+        let steam_b = TaperTube::new(12, 5, false);
+        let mut cup = Self {
+            enabled: true,
+            pos: CUP_HOME,
+            rot: Vec3::ZERO,
+            opacity: 1.0,
+            body_geo,
+            rim_geo,
+            handle_geo,
+            coffee_geo,
+            steam_a,
+            steam_b,
+            steam_opacity_a: 0.0,
+            steam_opacity_b: 0.0,
+            steam_dirty: true,
+        };
+        cup.update_steam(0.0, 1.0);
+        cup
+    }
+
+    pub fn world_matrix(&self) -> Mat4 {
+        Mat4::from_trs_euler(self.pos, self.rot, Vec3::ONE)
+    }
+
+    pub fn handle_world(&self) -> Mat4 {
+        self.world_matrix().mul(Mat4::from_trs_euler(
+            Vec3::new(-CUP_R * 0.92, CUP_H * 0.52, 0.0),
+            Vec3::ZERO,
+            Vec3::ONE,
+        ))
+    }
+
+    pub fn coffee_world(&self) -> Mat4 {
+        self.world_matrix().mul(Mat4::from_translation(Vec3::new(0.0, CUP_H + 0.002, 0.0)))
+    }
+
+    pub fn visible(&self) -> bool {
+        self.enabled && self.opacity > 0.01
+    }
+
+    pub fn update_steam(&mut self, t: f32, calm: f32) {
+        if !self.visible() || calm <= 0.02 {
+            self.steam_opacity_a = 0.0;
+            self.steam_opacity_b = 0.0;
+            return;
+        }
+        let world = self.world_matrix();
+        let update_one = |tube: &mut TaperTube, x_off: f32, phase: f32| -> f32 {
+            let life = ((t * 0.42 + phase) % 1.0 + 1.0) % 1.0;
+            let fade = smooth(0.0, 0.25, life) * (1.0 - smooth(0.65, 1.0, life));
+            let rise = 0.05 + life * 0.09;
+            tube.update(
+                |u| {
+                    let local = Vec3::new(
+                        x_off + (u * 5.0 + t * 2.0 + phase * TAU).sin() * 0.024 * u,
+                        CUP_H + rise + u * 0.19,
+                        0.0,
+                    );
+                    world.transform_point(local)
+                },
+                |u| 0.011 * ((u * 1.1 + 0.05).min(1.0) * PI).sin().max(0.001),
+                0.0,
+            );
+            fade * calm * self.opacity * 0.72
+        };
+        self.steam_opacity_a = update_one(&mut self.steam_a, -0.035, 0.0);
+        self.steam_opacity_b = update_one(&mut self.steam_b, 0.04, 0.45);
+        self.steam_dirty = true;
+    }
+
+    pub fn raycast(&self, orig: Vec3, dir: Vec3) -> bool {
+        self.visible() && self.body_geo.raycast(self.world_matrix(), orig, dir)
+    }
 }

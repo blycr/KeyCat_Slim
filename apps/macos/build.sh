@@ -26,7 +26,7 @@ for pair in "arm64:aarch64-apple-darwin" "x86_64:x86_64-apple-darwin"; do
     target="${pair#*:}"
     xcrun swiftc -O -swift-version 5 -target "$arch-apple-macosx13.0" \
         -import-objc-header crates/ffi/include/keycat_ffi.h \
-        -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText \
+        -framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework AVFoundation \
         "target/$target/release/libkeycat_ffi.a" \
         -o "build/arch/KeyCat-$arch" \
         apps/macos/*.swift

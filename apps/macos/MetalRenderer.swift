@@ -259,6 +259,10 @@ final class MetalRenderer {
                 updateDynamic(id: id, mv: kc_scene_dynamic_mesh(scene, id))
             }
         }
+        if frame.steam_dirty != 0 {
+            updateDynamic(id: UInt32(KC_DYN_STEAM_A), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_STEAM_A)))
+            updateDynamic(id: UInt32(KC_DYN_STEAM_B), mv: kc_scene_dynamic_mesh(scene, UInt32(KC_DYN_STEAM_B)))
+        }
         let activeEar = ensureEar(scene: scene, key: frame.ear_key)
 
         guard let cmd = queue.makeCommandBuffer() else { return nil }

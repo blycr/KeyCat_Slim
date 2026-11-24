@@ -19,7 +19,7 @@ mod imp {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Output};
 
-    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::RegKey;
 
     use super::Mode;
@@ -57,9 +57,27 @@ mod imp {
         text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
     }
 
+    /// Only a copy inside Program Files (which only administrators can modify) may get an elevated
+    /// login task; a copy in a user-writable folder could be swapped by another user program.
+    pub fn task_allowed() -> bool {
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let Ok(dir) = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows\CurrentVersion")
+            .and_then(|key| key.get_value::<String, _>("ProgramFilesDir"))
+        else {
+            return false;
+        };
+        let dir = dir.trim_end_matches('\\').to_lowercase();
+        let exe = exe.display().to_string().to_lowercase();
+        !dir.is_empty() && !exe.contains("..") && exe.starts_with(&format!("{dir}\\"))
+    }
+
     /// Whether the task exists and starts this very program, not a copy installed elsewhere
     /// before. Anything unexpected in the answer counts as no.
     pub fn task_runs_this() -> bool {
+        if !task_allowed() {
+            return false;
+        }
         let Ok(exe) = std::env::current_exe() else { return false };
         let want = format!("<Command>{}</Command>", escape(&exe.display().to_string())).to_lowercase();
         schtasks(&["/Query", "/TN", &task_name(), "/XML"])
@@ -111,7 +129,8 @@ mod imp {
         // schtasks reads task XML as UTF-16 with a byte order mark.
         let mut bytes = vec![0xFF, 0xFE];
         bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
-        let file = std::env::temp_dir().join("keycat-task.xml");
+        // Write XML next to the executable (admin-only folder), avoiding %TEMP% race conditions.
+        let file = exe.with_file_name("keycat-task.xml");
         std::fs::write(&file, bytes)?;
         let created = schtasks(&["/Create", "/F", "/TN", &task_name(), "/XML", &file.display().to_string()]);
         let _ = std::fs::remove_file(&file);
@@ -137,6 +156,9 @@ mod imp {
     }
 
     pub fn set(mode: Mode) -> Result<()> {
+        if mode == Mode::Task && !task_allowed() {
+            return Err(Error::other("the elevated login task is only allowed for a copy in Program Files"));
+        }
         // Only one of the two may stay, or KeyCat would start twice.
         if mode != Mode::Task && task_exists() {
             check(schtasks(&["/Delete", "/F", "/TN", &task_name()])?)?;
@@ -168,6 +190,10 @@ mod imp {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "autostart is Windows-only"))
     }
 
+    pub fn task_allowed() -> bool {
+        false
+    }
+
     pub fn task_runs_this() -> bool {
         false
     }
@@ -177,4 +203,4 @@ mod imp {
     }
 }
 
-pub use imp::{current, run_task, set, task_runs_this};
+pub use imp::{current, run_task, set, task_allowed, task_runs_this};

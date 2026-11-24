@@ -76,9 +76,11 @@ mod imp {
         }
 
         fn bake(&self, device: &ID3D11Device, key: &SpriteKey) -> Result<ID3D11ShaderResourceView> {
-            let wide = matches!(key, SpriteKey::Cap(t) if t.chars().count() > 1);
-            let w: u32 = if wide { 256 } else { 128 };
-            let h: u32 = 128;
+            let (w, h): (u32, u32) = match key {
+                SpriteKey::Cap(t) if t.chars().count() > 1 => (256, 128),
+                SpriteKey::Bubble(_) => (512, 128),
+                _ => (128, 128),
+            };
 
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: w,
@@ -120,6 +122,8 @@ mod imp {
                     SpriteKey::Anger => self.draw_anger(&rt)?,
                     SpriteKey::Bang => self.draw_bang(&rt)?,
                     SpriteKey::Dust => self.draw_dust(&rt)?,
+                    SpriteKey::Heart => self.draw_heart(&rt)?,
+                    SpriteKey::Bubble(text) => self.draw_bubble(&rt, w as f32, text)?,
                 }
                 rt.EndDraw(None, None)?;
             }
@@ -294,6 +298,85 @@ mod imp {
             let e = D2D1_ELLIPSE { point: pt(64.0, 64.0), radiusX: 52.0, radiusY: 52.0 };
             rt.FillEllipse(&e, &fill);
             rt.DrawEllipse(&e, &stroke, 6.0, None);
+            Ok(())
+        }
+
+        unsafe fn draw_heart(&self, rt: &ID2D1RenderTarget) -> Result<()> {
+            let fill = rt.CreateSolidColorBrush(&rgba(0xf2, 0x7c, 0x94, 1.0), None)?;
+            let stroke = rt.CreateSolidColorBrush(&rgba(0xfb, 0xfa, 0xf3, 1.0), None)?;
+            let geo = self.d2d.CreatePathGeometry()?;
+            let sink = geo.Open()?;
+            sink.BeginFigure(pt(64.0, 108.0), D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(14.0, 74.0),
+                point2: pt(18.0, 44.0),
+            });
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(20.0, 18.0),
+                point2: pt(46.0, 22.0),
+            });
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(58.0, 24.0),
+                point2: pt(64.0, 38.0),
+            });
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(70.0, 24.0),
+                point2: pt(82.0, 22.0),
+            });
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(108.0, 18.0),
+                point2: pt(110.0, 44.0),
+            });
+            sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT {
+                point1: pt(114.0, 74.0),
+                point2: pt(64.0, 108.0),
+            });
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.Close()?;
+            rt.DrawGeometry(&geo, &stroke, 12.0, None);
+            rt.FillGeometry(&geo, &fill, None);
+            Ok(())
+        }
+
+        unsafe fn draw_bubble(&self, rt: &ID2D1RenderTarget, w: f32, text: &str) -> Result<()> {
+            let shadow = rt.CreateSolidColorBrush(&rgba(30, 26, 22, 0.32), None)?;
+            let fill = rt.CreateSolidColorBrush(&rgba(0xfb, 0xf8, 0xf1, 0.98), None)?;
+            let stroke = rt.CreateSolidColorBrush(&rgba(0x3a, 0x32, 0x2b, 1.0), None)?;
+            let ink = rt.CreateSolidColorBrush(&rgba(0x23, 0x1e, 0x1a, 1.0), None)?;
+            let rr_shadow = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: 10.0, top: 18.0, right: w - 10.0, bottom: 112.0 },
+                radiusX: 44.0,
+                radiusY: 44.0,
+            };
+            rt.FillRoundedRectangle(&rr_shadow, &shadow);
+            let rr = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: 10.0, top: 10.0, right: w - 10.0, bottom: 104.0 },
+                radiusX: 44.0,
+                radiusY: 44.0,
+            };
+            rt.FillRoundedRectangle(&rr, &fill);
+            rt.DrawRoundedRectangle(&rr, &stroke, 5.0, None);
+            let fmt = self.dwrite.CreateTextFormat(
+                w!("Microsoft YaHei UI"),
+                None,
+                DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                38.0,
+                w!("zh-CN"),
+            )?;
+            fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            let utf16: Vec<u16> = text.encode_utf16().collect();
+            let rect = D2D_RECT_F { left: 26.0, top: 12.0, right: w - 26.0, bottom: 102.0 };
+            rt.DrawText(
+                &utf16,
+                &fmt,
+                &rect,
+                &ink,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
             Ok(())
         }
     }

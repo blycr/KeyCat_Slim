@@ -9,7 +9,10 @@ mod imp {
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
 
-    use keycat_core::tuning::{ParamKind, Tuning, GROUPS, TUNING_SCHEMA};
+    use keycat_core::tuning::{
+        format_param_value, group_switch_key, ParamKind, Tuning, GROUPS, TUNING_PRESETS,
+        TUNING_SCHEMA,
+    };
     use windows::core::{w, BOOL, PCWSTR, Result};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F, D2D_SIZE_U};
@@ -52,6 +55,7 @@ mod imp {
     pub const WM_SETTINGS_RESET: u32 = WM_APP + 11;
     pub const WM_SETTINGS_TEST_ANNOY: u32 = WM_APP + 12;
     pub const WM_SETTINGS_TEST_CURIOUS: u32 = WM_APP + 13;
+    pub const WM_SETTINGS_PRESET: u32 = WM_APP + 14;
 
     const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -375,16 +379,34 @@ mod imp {
             if meta.kind == ParamKind::Toggle {
                 return true;
             }
-            if meta.group == GROUPS[0] {
-                self.tuning.annoy_on
+            if let Some(sw) = group_switch_key(meta.group) {
+                self.tuning.get_value(sw) >= 0.5
+            } else if meta.key == "nightAt" {
+                self.tuning.night_on
             } else {
-                self.tuning.curious_on
+                true
             }
+        }
+
+        fn preset_rects(&self) -> Vec<D2D_RECT_F> {
+            let card_left = PAD_X;
+            let card_right = LOGICAL_W - PAD_X;
+            let gap = 6.0;
+            let n = TUNING_PRESETS.len() as f32;
+            let w = (card_right - card_left - gap * (n - 1.0)) / n;
+            let top = 40.0;
+            let h = 28.0;
+            (0..TUNING_PRESETS.len())
+                .map(|i| {
+                    let l = card_left + i as f32 * (w + gap);
+                    D2D_RECT_F { left: l, top, right: l + w, bottom: top + h }
+                })
+                .collect()
         }
 
         fn compute_layout(&mut self) {
             self.rows.clear();
-            let mut y = 42.0f32; // room for top subtitle
+            let mut y = 96.0f32; // room for top subtitle + personality preset bar
             let card_left = PAD_X;
             let card_right = LOGICAL_W - PAD_X;
             let inner_l = card_left + 14.0;
@@ -404,7 +426,9 @@ mod imp {
                     let hint_chars = meta.hint.chars().count();
                     let hint_h = if hint_chars == 0 {
                         0.0
-                    } else if hint_chars > 24 {
+                    } else if hint_chars > 42 {
+                        50.0
+                    } else if hint_chars > 22 {
                         34.0
                     } else {
                         20.0
@@ -490,10 +514,37 @@ mod imp {
                     right: card_r,
                     bottom: 34.0 - sy,
                 };
-                draw_text(&rt, "改动实时生效，可随时点下方按钮看小猫反应", &self.fmt_subtitle, &sub_rc, &b_muted);
+                draw_text(&rt, "选择性格预设或逐项微调，改动实时生效", &self.fmt_subtitle, &sub_rc, &b_muted);
+
+                // Personality preset pill bar
+                let active_preset = self.tuning.matching_preset();
+                for (pi, pr) in self.preset_rects().iter().enumerate() {
+                    let r = D2D_RECT_F { left: pr.left, top: pr.top - sy, right: pr.right, bottom: pr.bottom - sy };
+                    let selected = active_preset == Some(pi);
+                    let rr = D2D1_ROUNDED_RECT { rect: r, radiusX: 14.0, radiusY: 14.0 };
+                    rt.FillRoundedRectangle(&rr, if selected { &b_accent } else { &b_card });
+                    rt.DrawRoundedRectangle(&rr, if selected { &b_accent } else { &b_line }, 1.0, None);
+                    draw_text(
+                        &rt,
+                        TUNING_PRESETS[pi].name,
+                        &self.fmt_btn,
+                        &r,
+                        if selected { &b_accent_txt } else { &b_text },
+                    );
+                }
+                let preset_hint = active_preset
+                    .map(|i| TUNING_PRESETS[i].hint)
+                    .unwrap_or("已自定义参数，可随时切换预设或恢复默认");
+                let ph_rc = D2D_RECT_F {
+                    left: card_l + 4.0,
+                    top: 72.0 - sy,
+                    right: card_r,
+                    bottom: 92.0 - sy,
+                };
+                draw_text(&rt, preset_hint, &self.fmt_hint, &ph_rc, &b_muted);
 
                 // Group headers and cards
-                let mut cur_y = 42.0f32;
+                let mut cur_y = 96.0f32;
                 for (gi, &group) in GROUPS.iter().enumerate() {
                     if gi > 0 {
                         cur_y += 16.0;
@@ -574,11 +625,7 @@ mod imp {
                             rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: kx, Y: ky }, radiusX: 7.5, radiusY: 7.5 }, &b_card);
                         }
                         ParamKind::Range => {
-                            let txt = if meta.step < 1.0 {
-                                format!("{val:.1} {}", meta.unit)
-                            } else {
-                                format!("{} {}", val.round() as i32, meta.unit)
-                            };
+                            let txt = format_param_value(meta, val);
                             let val_rc = D2D_RECT_F {
                                 left: inner_r - 92.0,
                                 top: top + 6.0,
@@ -682,9 +729,25 @@ mod imp {
             None
         }
 
+        fn hit_preset(&self, cx: f32, cy: f32) -> Option<usize> {
+            if cy >= self.scroll_view_height() {
+                return None;
+            }
+            let y = cy + self.scroll_y;
+            for (i, r) in self.preset_rects().iter().enumerate() {
+                if cx >= r.left && cx <= r.right && y >= r.top && y <= r.bottom {
+                    return Some(i);
+                }
+            }
+            None
+        }
+
         fn hit_interactive_row(&self, cx: f32, cy: f32) -> bool {
             if cy >= self.scroll_view_height() {
                 return false;
+            }
+            if self.hit_preset(cx, cy).is_some() {
+                return true;
             }
             let y = cy + self.scroll_y;
             for row in &self.rows {
@@ -751,6 +814,14 @@ mod imp {
                 return;
             }
             if cy >= self.scroll_view_height() {
+                return;
+            }
+            if let Some(pi) = self.hit_preset(cx, cy) {
+                self.tuning.apply_preset(pi);
+                unsafe {
+                    let _ = PostMessageW(Some(self.owner), WM_SETTINGS_PRESET, WPARAM(pi), LPARAM(0));
+                    let _ = InvalidateRect(Some(self.hwnd), None, false);
+                }
                 return;
             }
             let y = cy + self.scroll_y;

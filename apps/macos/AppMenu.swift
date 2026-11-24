@@ -47,8 +47,15 @@ extension AppDelegate {
     }
 
     func buildMenu(_ menu: NSMenu) {
-        menu.addItem(toggle("立体效果（3D）", style == "3d") { $0.style = $0.style == "3d" ? "2d" : "3d" })
-        menu.addItem(submenu("毛色", [
+        let pomoItem = item(pomodoro ? "结束番茄钟" : "开始番茄钟") { $0.togglePomodoro() }
+        pomoItem.state = pomodoro ? .on : .off
+        menu.addItem(pomoItem)
+        menu.addItem(.separator())
+
+        // Group 1: 外观
+        let lookItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
+        let lookMenu = NSMenu()
+        lookMenu.addItem(submenu("毛色", [
             ("黑猫", "black"), ("奶牛猫", "tuxedo"), ("橘猫", "orange"), ("蓝灰猫", "grey"),
             ("白猫", "white"), ("三花猫", "calico"), ("暹罗猫", "siamese"), ("布偶猫", "ragdoll"),
             ("德文卷毛猫", "devon"), ("美短银虎斑", "silver"), ("狸花猫", "lihua"),
@@ -56,12 +63,16 @@ extension AppDelegate {
 
         if coat == "orange" || coat == "grey" {
             let striped = pattern == "tabby" || (pattern == "auto" && coat == "orange")
-            menu.addItem(submenu("花纹", [("纯色", "solid"), ("虎斑条纹", "tabby")],
-                                 selected: striped ? "tabby" : "solid") { $0.pattern = $1 })
+            lookMenu.addItem(submenu("花纹", [("纯色", "solid"), ("虎斑条纹", "tabby")],
+                                     selected: striped ? "tabby" : "solid") { $0.pattern = $1 })
         }
 
-        let looks = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
-        let lookMenu = NSMenu()
+        lookMenu.addItem(submenu("大小", [
+            ("特小", 0.5), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35),
+        ] as [(String, CGFloat)], selected: scale) { $0.applyScale($1, keepOrigin: true) })
+        lookMenu.addItem(toggle("立体效果（3D）", style == "3d") { $0.style = $0.style == "3d" ? "2d" : "3d" })
+        lookMenu.addItem(.separator())
+
         lookMenu.addItem(submenu("眼睛颜色", [
             ("跟随毛色", "auto"), ("金色", "gold"), ("绿色", "green"),
             ("蓝色", "blue"), ("琥珀色", "amber"), ("鸳鸯眼（一蓝一金）", "odd"),
@@ -69,18 +80,31 @@ extension AppDelegate {
         lookMenu.addItem(submenu("眼睛高光", [
             ("无", "none"), ("经典", "classic"), ("闪亮", "sparkle"),
         ], selected: eyeShine) { $0.eyeShine = $1 })
+        lookMenu.addItem(submenu("手套颜色", [
+            ("跟随毛色", "auto"), ("白色", "white"), ("黑色", "black"), ("粉色", "pink"),
+        ], selected: gloves) { $0.gloves = $1 })
         lookMenu.addItem(submenu("项圈", [
             ("无", "none"), ("红色铃铛", "red"), ("蓝色铃铛", "blue"),
             ("粉色铃铛", "pink"), ("绿色铃铛", "green"),
         ], selected: collar) { $0.collar = $1 })
         lookMenu.addItem(toggle("腮红", blush) { $0.blush.toggle() })
         lookMenu.addItem(toggle("胡须", whiskers) { $0.whiskers.toggle() })
-        looks.submenu = lookMenu
-        menu.addItem(looks)
+        lookMenu.addItem(toggle("节日装扮", festival) { $0.festival.toggle() })
+        lookItem.submenu = lookMenu
+        menu.addItem(lookItem)
 
-        menu.addItem(submenu("大小", [
-            ("特小", 0.5), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35),
-        ] as [(String, CGFloat)], selected: scale) { $0.applyScale($1, keepOrigin: true) })
+        // Group 2: 桌面
+        let deskItem = NSMenuItem(title: "桌面", action: nil, keyEquivalent: "")
+        let deskMenu = NSMenu()
+        deskMenu.addItem(submenu("键盘颜色", [
+            ("奶白", "cream"), ("黑灰", "dark"), ("樱粉", "pink"), ("薄荷", "mint"),
+        ], selected: keyboardColor) { $0.keyboardColor = $1 })
+        deskMenu.addItem(toggle("鼠标线", mouseCable) { $0.mouseCable.toggle() })
+        deskMenu.addItem(toggle("桌上的杯子（它会推下去）", cup) { $0.cup.toggle() })
+        let opacityPct = Int((opacity * 100.0).rounded())
+        deskMenu.addItem(submenu("透明度", [
+            ("不透明", 100), ("85%", 85), ("70%", 70), ("55%", 55),
+        ], selected: opacityPct) { $0.opacity = Double($1) / 100.0 })
 
         var fpsOptions: [(String, FpsMode)] = [("自动", .auto), ("30 fps", .fixed(30)), ("60 fps", .fixed(60))]
         if let highHz = detectedHighFPS() {
@@ -90,19 +114,27 @@ extension AppDelegate {
             fpsOptions.append(("\(n) fps", .fixed(n)))
         }
         fpsOptions.append(("不限制", .unlimited))
-        menu.addItem(submenu("帧率", fpsOptions, selected: fps) {
+        deskMenu.addItem(submenu("帧率", fpsOptions, selected: fps) {
             $0.fps = $1
             $0.rescheduleFrameLoop()
         })
+        deskItem.submenu = deskMenu
+        menu.addItem(deskItem)
 
-        menu.addItem(submenu("多久睡着", [
+        // Group 3: 习性
+        let habitItem = NSMenuItem(title: "习性", action: nil, keyEquivalent: "")
+        let habitMenu = NSMenu()
+        habitMenu.addItem(submenu("多久睡着", [
             ("30 秒", 30), ("1 分钟", 60), ("3 分钟", 180), ("10 分钟", 600), ("不睡", 0),
         ], selected: sleepAfter) { $0.sleepAfter = $1 })
+        habitMenu.addItem(toggle("声音（摸它时呼噜）", sound) { $0.sound.toggle() })
+        habitMenu.addItem(item("调节反应…") { $0.settings.show() })
+        habitItem.submenu = habitMenu
+        menu.addItem(habitItem)
 
+        menu.addItem(.separator())
         menu.addItem(toggle("隐私模式（不显示键名）", privacy) { $0.privacy.toggle() })
         menu.addItem(toggle("鼠标穿透（点击直接落到下层窗口）", clickThrough) { $0.clickThrough.toggle() })
-        menu.addItem(item("调节反应…") { $0.settings.show() })
-        menu.addItem(.separator())
         menu.addItem(item("回到右下角") { $0.resetPosition() })
         menu.addItem(item(panel.isVisible ? "隐藏" : "显示") { $0.toggleVisible() })
         menu.addItem(.separator())

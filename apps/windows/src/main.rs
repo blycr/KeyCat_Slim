@@ -2,6 +2,8 @@
 //! DirectComposition (`WS_EX_NOREDIRECTIONBITMAP`) and Direct2D/DirectWrite.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg_attr(not(windows), allow(dead_code))]
+mod audio;
 mod autostart;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod display;
@@ -56,6 +58,7 @@ mod win_app {
     };
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::SystemInformation::GetLocalTime;
     use windows::Win32::System::Threading::{CreateMutexW, INFINITE};
     use windows::Win32::UI::HiDpi::{
         GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -71,24 +74,27 @@ mod win_app {
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
+    use crate::audio::PurrAudio;
     use crate::autostart::{self, Mode};
     use crate::display;
     use crate::elevate;
     use crate::hook::{self, Button, Input};
     use crate::renderer::Renderer;
     use crate::settings_win::{
-        self, WM_SETTINGS_CHANGED, WM_SETTINGS_RESET, WM_SETTINGS_TEST_ANNOY,
+        self, WM_SETTINGS_CHANGED, WM_SETTINGS_PRESET, WM_SETTINGS_RESET, WM_SETTINGS_TEST_ANNOY,
         WM_SETTINGS_TEST_CURIOUS,
     };
     use crate::store::Store;
     use crate::tray::{
         self, FpsMode, MenuState, TrayIcon, CMD_COAT_BASE, CMD_COLLAR_BASE, CMD_EYE_BASE,
-        CMD_FPS_30, CMD_FPS_60, CMD_FPS_AUTO, CMD_FPS_HIGH, CMD_FPS_UNLIM, CMD_HOME,
-        CMD_OPEN_SETTINGS, CMD_PATTERN_SOLID, CMD_PATTERN_TABBY, CMD_QUIT, CMD_SCALE_BASE,
-        CMD_SHINE_BASE, CMD_SLEEP_BASE, CMD_TOGGLE_3D, CMD_TOGGLE_ADMIN, CMD_TOGGLE_AUTOSTART,
-        CMD_TOGGLE_BLUSH, CMD_TOGGLE_CLICK_THROUGH, CMD_TOGGLE_PRIVACY, CMD_TOGGLE_WHISKERS,
-        CMD_VISIBILITY, COLLAR_OPTIONS, EYE_OPTIONS, SCALE_OPTIONS, SHINE_OPTIONS, SLEEP_OPTIONS,
-        WM_TRAY,
+        CMD_FPS_30, CMD_FPS_60, CMD_FPS_AUTO, CMD_FPS_HIGH, CMD_FPS_UNLIM, CMD_GLOVE_BASE,
+        CMD_HOME, CMD_KB_COLOR_BASE, CMD_OPACITY_BASE, CMD_OPEN_SETTINGS, CMD_PATTERN_SOLID,
+        CMD_PATTERN_TABBY, CMD_QUIT, CMD_SCALE_BASE, CMD_SHINE_BASE, CMD_SLEEP_BASE,
+        CMD_TOGGLE_3D, CMD_TOGGLE_ADMIN, CMD_TOGGLE_AUTOSTART, CMD_TOGGLE_BLUSH,
+        CMD_TOGGLE_CABLE, CMD_TOGGLE_CLICK_THROUGH, CMD_TOGGLE_CUP, CMD_TOGGLE_FESTIVAL,
+        CMD_TOGGLE_POMODORO, CMD_TOGGLE_PRIVACY, CMD_TOGGLE_SOUND, CMD_TOGGLE_WHISKERS,
+        CMD_VISIBILITY, COLLAR_OPTIONS, EYE_OPTIONS, GLOVE_OPTIONS, KB_COLOR_OPTIONS,
+        OPACITY_OPTIONS, SCALE_OPTIONS, SHINE_OPTIONS, SLEEP_OPTIONS, WM_TRAY,
     };
 
     const IDENTIFIER: &str = "com.ellobok.keycat";
@@ -107,6 +113,7 @@ mod win_app {
         store: Store,
         scene: Scene,
         renderer: Renderer,
+        audio: PurrAudio,
         _tray: TrayIcon,
         visible: bool,
         click_through: bool,
@@ -118,6 +125,8 @@ mod win_app {
         hook_ready: bool,
         held: HashMap<u32, (u32, Option<&'static str>)>,
         last_key_audit: Instant,
+        last_clock_sync: Instant,
+        last_pet_click: Option<Instant>,
         petting: bool,
         drag: Option<Drag>,
         last_pointer: Option<(i32, i32)>,
@@ -134,18 +143,26 @@ mod win_app {
     }
 
     struct OwnedMenuState {
+        pomodoro: bool,
         style_3d: bool,
         coat: String,
         pattern: String,
         eye: String,
         shine: String,
+        gloves: String,
         collar: String,
         blush: bool,
         whiskers: bool,
+        festival: bool,
         scale: f64,
+        keyboard_color: String,
+        mouse_cable: bool,
+        cup: bool,
+        opacity: f64,
         fps: FpsMode,
         high_fps: Option<u32>,
         sleep_after: f64,
+        sound: bool,
         privacy: bool,
         click_through: bool,
         autostart: Mode,
@@ -157,18 +174,26 @@ mod win_app {
     impl OwnedMenuState {
         fn as_menu_state(&self) -> MenuState<'_> {
             MenuState {
+                pomodoro: self.pomodoro,
                 style_3d: self.style_3d,
                 coat: &self.coat,
                 pattern: &self.pattern,
                 eye: &self.eye,
                 shine: &self.shine,
+                gloves: &self.gloves,
                 collar: &self.collar,
                 blush: self.blush,
                 whiskers: self.whiskers,
+                festival: self.festival,
                 scale: self.scale,
+                keyboard_color: &self.keyboard_color,
+                mouse_cable: self.mouse_cable,
+                cup: self.cup,
+                opacity: self.opacity,
                 fps: self.fps,
                 high_fps: self.high_fps,
                 sleep_after: self.sleep_after,
+                sound: self.sound,
                 privacy: self.privacy,
                 click_through: self.click_through,
                 autostart: self.autostart,
@@ -228,6 +253,12 @@ mod win_app {
             store.get(key).and_then(Value::as_str).unwrap_or(fb).to_string()
         };
         let coat = text("coat", "black");
+        let opacity = store
+            .get("opacity")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .map(|v| (v as f32).clamp(0.3, 1.0))
+            .unwrap_or(1.0);
         Look {
             style_3d: text("style", "2d") == "3d",
             pattern: text(&format!("pattern.{coat}"), "auto"),
@@ -236,8 +267,21 @@ mod win_app {
             collar: text("collar", "none"),
             blush: store.get("blush") == Some(&Value::Bool(true)),
             whiskers: store.get("whiskers") != Some(&Value::Bool(false)),
+            gloves: text("gloves", "auto"),
+            keyboard_color: text("keyboardColor", "cream"),
+            mouse_cable: store.get("mouseCable") != Some(&Value::Bool(false)),
+            opacity,
+            cup: store.get("cup") != Some(&Value::Bool(false)),
+            festival: store.get("festival") != Some(&Value::Bool(false)),
+            sound: store.get("sound") == Some(&Value::Bool(true)),
             coat,
         }
+    }
+
+    fn sync_local_clock(scene: &mut Scene) {
+        let st = unsafe { GetLocalTime() };
+        let hour = st.wHour as f32 + st.wMinute as f32 / 60.0;
+        scene.set_local_clock(st.wYear as i32, st.wMonth as u32, st.wDay as u32, hour);
     }
 
     fn read_tuning(store: &Store) -> Tuning {
@@ -328,7 +372,7 @@ mod win_app {
                 .and_then(Value::as_f64)
                 .filter(|v| v.is_finite())
                 .unwrap_or(60.0);
-            self.scene.sleep_after = if sleep > 0.0 { sleep as f32 } else { 1e9 };
+            self.scene.sleep_after = if sleep > 0.0 { sleep as f32 } else { 0.0 };
             self.click_through = self.store.get("clickThrough") == Some(&Value::Bool(true));
             self.run_as_admin = self.store.get("runAsAdmin") == Some(&Value::Bool(true));
             self.fps = read_fps(&self.store);
@@ -526,6 +570,15 @@ mod win_app {
                             }
                             Button::Left if self.scene.hit == HitZone::Pet => {
                                 if !self.petting {
+                                    let now = Instant::now();
+                                    let is_double = self
+                                        .last_pet_click
+                                        .is_some_and(|prev| now.saturating_duration_since(prev) <= Duration::from_millis(420));
+                                    self.last_pet_click = Some(now);
+                                    if is_double {
+                                        self.last_pet_click = None;
+                                        self.scene.on_head_double_click();
+                                    }
                                     self.petting = true;
                                     let mut rc = RECT::default();
                                     unsafe { let _ = GetWindowRect(self.hwnd, &mut rc); }
@@ -583,18 +636,26 @@ mod win_app {
                 .and_then(Value::as_f64)
                 .unwrap_or(60.0);
             OwnedMenuState {
+                pomodoro: self.scene.pomodoro,
                 style_3d: look.style_3d,
                 coat: look.coat,
                 pattern: look.pattern,
                 eye: look.eye,
                 shine: look.shine,
+                gloves: look.gloves,
                 collar: look.collar,
                 blush: look.blush,
                 whiskers: look.whiskers,
+                festival: look.festival,
                 scale: self.scale,
+                keyboard_color: look.keyboard_color,
+                mouse_cable: look.mouse_cable,
+                cup: look.cup,
+                opacity: f64::from(look.opacity),
                 fps: self.fps,
                 high_fps: (self.display_hz > 60).then_some(self.display_hz),
                 sleep_after,
+                sound: look.sound,
                 privacy: self.scene.privacy,
                 click_through: self.click_through,
                 autostart: self.autostart,
@@ -606,6 +667,10 @@ mod win_app {
 
         fn handle_menu_cmd(&mut self, cmd: u32, high_fps: Option<u32>) {
             match cmd {
+                CMD_TOGGLE_POMODORO => {
+                    let next = !self.scene.pomodoro;
+                    self.scene.set_pomodoro(next);
+                }
                 CMD_TOGGLE_3D => {
                     let next = if self.scene.cat.look.style_3d { "2d" } else { "3d" };
                     self.store.set("style", json!(next));
@@ -630,6 +695,10 @@ mod win_app {
                     self.store.set("eyeShine", json!(SHINE_OPTIONS[(c - CMD_SHINE_BASE) as usize].1));
                     self.apply_scene_options();
                 }
+                c if (CMD_GLOVE_BASE..CMD_GLOVE_BASE + GLOVE_OPTIONS.len() as u32).contains(&c) => {
+                    self.store.set("gloves", json!(GLOVE_OPTIONS[(c - CMD_GLOVE_BASE) as usize].1));
+                    self.apply_scene_options();
+                }
                 c if (CMD_COLLAR_BASE..CMD_COLLAR_BASE + COLLAR_OPTIONS.len() as u32).contains(&c) => {
                     self.store.set("collar", json!(COLLAR_OPTIONS[(c - CMD_COLLAR_BASE) as usize].1));
                     self.apply_scene_options();
@@ -644,8 +713,36 @@ mod win_app {
                     self.store.set("whiskers", json!(v));
                     self.apply_scene_options();
                 }
+                CMD_TOGGLE_FESTIVAL => {
+                    let v = !self.scene.festival_enabled;
+                    self.store.set("festival", json!(v));
+                    self.apply_scene_options();
+                }
                 c if (CMD_SCALE_BASE..CMD_SCALE_BASE + SCALE_OPTIONS.len() as u32).contains(&c) => {
                     self.apply_scale(SCALE_OPTIONS[(c - CMD_SCALE_BASE) as usize].1, true);
+                }
+                c if (CMD_KB_COLOR_BASE..CMD_KB_COLOR_BASE + KB_COLOR_OPTIONS.len() as u32).contains(&c) => {
+                    self.store.set("keyboardColor", json!(KB_COLOR_OPTIONS[(c - CMD_KB_COLOR_BASE) as usize].1));
+                    self.apply_scene_options();
+                }
+                CMD_TOGGLE_CABLE => {
+                    let v = !self.scene.mouse.cable_visible;
+                    self.store.set("mouseCable", json!(v));
+                    self.apply_scene_options();
+                }
+                CMD_TOGGLE_CUP => {
+                    let v = !self.scene.cup.enabled;
+                    self.store.set("cup", json!(v));
+                    self.apply_scene_options();
+                }
+                c if (CMD_OPACITY_BASE..CMD_OPACITY_BASE + OPACITY_OPTIONS.len() as u32).contains(&c) => {
+                    self.store.set("opacity", json!(OPACITY_OPTIONS[(c - CMD_OPACITY_BASE) as usize].1));
+                    self.apply_scene_options();
+                }
+                CMD_TOGGLE_SOUND => {
+                    let v = !self.scene.sound_enabled;
+                    self.store.set("sound", json!(v));
+                    self.apply_scene_options();
                 }
                 CMD_FPS_AUTO => {
                     self.store.set("fps", json!("auto"));
@@ -688,7 +785,7 @@ mod win_app {
                 }
                 CMD_TOGGLE_AUTOSTART => {
                     let want = if self.autostart == Mode::Off {
-                        if self.run_as_admin && elevate::is_elevated() {
+                        if self.run_as_admin && elevate::is_elevated() && autostart::task_allowed() {
                             Mode::Task
                         } else {
                             Mode::RunKey
@@ -738,7 +835,7 @@ mod win_app {
             if cfg!(debug_assertions) || self.autostart == Mode::Off {
                 return;
             }
-            let want = if self.run_as_admin && elevate::is_elevated() {
+            let want = if self.run_as_admin && elevate::is_elevated() && autostart::task_allowed() {
                 Mode::Task
             } else {
                 Mode::RunKey
@@ -908,6 +1005,17 @@ mod win_app {
                 });
                 LRESULT(0)
             }
+            WM_SETTINGS_PRESET => {
+                APP.with(|cell| {
+                    if let Ok(mut borrow) = cell.try_borrow_mut() {
+                        if let Some(ref mut app) = *borrow {
+                            app.scene.tuning.apply_preset(wparam.0);
+                            app.store.set("tune", Value::Object(app.scene.tuning.to_diff_json()));
+                        }
+                    }
+                });
+                LRESULT(0)
+            }
             WM_SETTINGS_TEST_ANNOY => {
                 APP.with(|cell| {
                     if let Ok(mut borrow) = cell.try_borrow_mut() {
@@ -1045,9 +1153,16 @@ mod win_app {
         }
 
         let mut scene = Scene::new();
+        sync_local_clock(&mut scene);
+        if let Some(mem_val) = store.get("memory") {
+            if let Ok(s) = serde_json::to_string(mem_val) {
+                scene.life.load_json(&s);
+            }
+        }
         scene.set_viewport((pw as f64 / factor) as f32, (ph as f64 / factor) as f32);
         let renderer = Renderer::new(hwnd, pw as u32, ph as u32, &scene)
             .expect("init D3D11 + DirectComposition renderer");
+        let audio = PurrAudio::new();
 
         let tray = TrayIcon::new(hwnd);
 
@@ -1063,6 +1178,7 @@ mod win_app {
             store,
             scene,
             renderer,
+            audio,
             _tray: tray,
             visible: true,
             click_through: false,
@@ -1074,6 +1190,8 @@ mod win_app {
             hook_ready,
             held: HashMap::new(),
             last_key_audit: Instant::now(),
+            last_clock_sync: Instant::now(),
+            last_pet_click: None,
             petting: false,
             drag: None,
             last_pointer: None,
@@ -1142,9 +1260,21 @@ mod win_app {
                 let due = app.visible && now >= next_frame;
                 if due {
                     app.reconcile_held_keys(now);
+                    if now.saturating_duration_since(app.last_clock_sync) >= Duration::from_secs(30) {
+                        app.last_clock_sync = now;
+                        sync_local_clock(&mut app.scene);
+                    }
                     let dt = now.saturating_duration_since(last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
                     app.scene.step(dt);
+                    let (a_on, a_lvl, a_br) = app.scene.purr_audio_state();
+                    app.audio.sync(a_on, a_lvl, a_br);
+                    if let Some(mem_json) = app.scene.life.take_dirty_json(app.scene.time, false) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&mem_json) {
+                            app.store.set_deferred("memory", v);
+                            app.save_deadline = Some(now + Duration::from_millis(500));
+                        }
+                    }
                     app.update_click_target();
                     app.renderer.render(&mut app.scene);
                 }
@@ -1177,6 +1307,11 @@ mod win_app {
         drop(hook_guard);
         APP.with(|cell| {
             if let Some(mut app) = cell.borrow_mut().take() {
+                if let Some(mem_json) = app.scene.life.take_dirty_json(app.scene.time, true) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&mem_json) {
+                        app.store.set("memory", v);
+                    }
+                }
                 app.store.flush_if_dirty();
             }
         });

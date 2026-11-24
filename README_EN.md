@@ -15,17 +15,18 @@ KeyCat Slim is a native rewrite based on [ElloboDK/KeyCat](https://github.com/El
 ## Features
 
 - **Zero WebView on Both Platforms**
-  - Windows: Rust + Direct3D 11 (4x MSAA) + DirectComposition + Direct2D. Per-user NSIS installer is ~390 KB with no WebView2 dependency.
-  - macOS: Swift + Metal (4x MSAA) + AppKit universal binary (`arm64` + `x86_64`), ~1.6 MB zipped, zero WebKit linkage.
+  - Windows: Rust + Direct3D 11 (4x MSAA) + DirectComposition + Direct2D. Signed-structure NSIS installer is ~430 KB with no WebView2 dependency.
+  - macOS: Swift + Metal (4x MSAA) + AppKit universal binary (`arm64` + `x86_64`), ~1.7 MB zipped, zero WebKit linkage.
 - **Shared Cross-Platform Rust Core**
-  - Procedural 3D geometry, 11 coats, spring physics, and the behavior state machine live in a single Rust core crate for consistent visuals and reactions across platforms.
+  - Procedural 3D geometry, 11 coats, Verlet tail physics, procedural purr audio synthesis, and the behavior state machine live in a single Rust core crate for consistent visuals and reactions across platforms.
 - **Adaptive and Locked Frame Rates**
   - Default **Auto** mode renders up to 60 fps (or display refresh rate if lower) while active and scales down automatically when idle or asleep.
   - Manual presets include `30 fps`, `60 fps`, native display refresh rate (`120`/`144`/`165`/`240 fps`), and **Unlimited**.
-- **Rich Appearance and Behavior Tuning**
-  - 11 coats, 2D/3D shading, eye colors and highlights, collars, blush, whiskers, window scaling, sleep timeout, and a dedicated native tuning window.
+- **Rich Appearance, Desk, and Personality Customization**
+  - 11 coats, 2D/3D shading, eye colors and highlights, glove colors, collars, blush, whiskers, and seasonal outfits (Christmas, Halloween, Lunar New Year, Anniversary).
+  - 4 keyboard color themes, toggleable mouse cable, interactive steaming coffee mug, 4 opacity levels, 5 personality presets, procedural purring & kneading, double-click slow-blink, break/bedtime nudges, and a built-in Pomodoro timer.
 - **Privacy First and Reliable Input**
-  - Never logs typed text or sends telemetry. Reacts only to key up/down state and cursor coordinates, with automatic stuck-key self-healing after lock screen, UAC prompts, or macOS Secure Input fields.
+  - Never logs typed text or sends telemetry (local familiarity stores daily aggregate counts only). Reacts only to key up/down state and cursor coordinates, with automatic stuck-key self-healing after lock screen, UAC prompts, or macOS Secure Input fields.
 
 ## Installation
 
@@ -33,7 +34,7 @@ KeyCat Slim is a native rewrite based on [ElloboDK/KeyCat](https://github.com/El
 
 Download `KeyCat-Windows-Setup.exe` from [Releases](https://github.com/blycr/KeyCat_Slim/releases/latest) and run the installer.
 
-- Installs per-user under `%LOCALAPPDATA%\KeyCat` without administrator rights, integrates with Windows Apps & Features, and preserves existing settings on upgrade.
+- Installs to `C:\Program Files\KeyCat` (requires one UAC confirmation so elevated autostart tasks are protected by system ACLs), automatically migrates legacy `%LOCALAPPDATA%\KeyCat` installs while preserving all settings, and cleans up scheduled tasks on uninstall.
 - Because this open-source project is not commercially code-signed, Windows SmartScreen may show a warning; choose **More info -> Run anyway**.
 
 ### macOS (macOS 13 Ventura+, Apple Silicon and Intel)
@@ -64,9 +65,9 @@ brew uninstall --cask --zap keycat    # Uninstall and remove preferences
 
 KeyCat resides in the system tray (Windows) or menu bar (macOS). Right-click the cat or click the tray/menu bar icon to open the menu:
 
-- **Drag and Click-Through**: Drag the cat anywhere on screen. Enable **Click-Through** while streaming or working full-screen so clicks pass directly to underlying windows.
-- **Appearance and Tuning**: Switch coats, 2D/3D mode, scale, and FPS from the menu; open **Tune Reactions** to adjust sensitivity and preview animations immediately (`Esc` closes the window).
-- **Privacy and Hide**: Enable **Privacy Mode** to hide floating keycap labels; **Hide** suspends rendering completely.
+- **Drag, Slow-Blink, and Click-Through**: Drag the cat anywhere on screen, or double-click its head to slow-blink at it. Enable **Click-Through** while streaming or working full-screen so clicks pass directly to underlying windows.
+- **Appearance, Desk, and Habits**: The menu is organized into **Appearance**, **Desk**, and **Habits**, plus a top-level Pomodoro toggle. Open **Tune Reactions** to switch between 5 personality presets or fine-tune behavior thresholds (`Esc` closes the window).
+- **Privacy and Hide**: Enable **Privacy Mode** to hide floating keycap labels; **Hide** suspends rendering and audio completely.
 
 ### Windows Gaming and Elevation Notes
 

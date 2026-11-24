@@ -12,6 +12,7 @@ mod imp {
     use keycat_core::cat::{COLLAR_LIFT, HEAD_R};
     use keycat_core::geometry::{MeshData, Vertex};
     use keycat_core::keyboard::KeyInstance;
+    use keycat_core::life::Festival;
     use keycat_core::math::{hex_color, Mat4, Vec3};
     use windows::core::{Interface, Result, BOOL, PCSTR};
     use windows::Win32::Foundation::HWND;
@@ -39,7 +40,8 @@ mod imp {
         D3D11_USAGE_IMMUTABLE, D3D11_VIEWPORT,
     };
     use windows::Win32::Graphics::DirectComposition::{
-        DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+        DCompositionCreateDevice, IDCompositionDevice, IDCompositionEffectGroup,
+        IDCompositionTarget, IDCompositionVisual,
     };
     use windows::Win32::Graphics::Dxgi::Common::{
         DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT,
@@ -112,9 +114,11 @@ mod imp {
         device: ID3D11Device,
         ctx: ID3D11DeviceContext,
         swap_chain: IDXGISwapChain1,
-        _dcomp_device: IDCompositionDevice,
+        dcomp_device: IDCompositionDevice,
         _dcomp_target: IDCompositionTarget,
         _dcomp_visual: IDCompositionVisual,
+        dcomp_effect: IDCompositionEffectGroup,
+        last_opacity: f32,
         sample_count: u32,
         width: u32,
         height: u32,
@@ -184,6 +188,13 @@ mod imp {
         mouse_wheel_gpu: GpuMesh,
         mouse_seam_gpu: GpuMesh,
         mouse_btn_gpu: GpuMesh,
+        cup_body_gpu: GpuMesh,
+        cup_rim_gpu: GpuMesh,
+        cup_handle_gpu: GpuMesh,
+        cup_coffee_gpu: GpuMesh,
+        hat_cone_gpu: GpuMesh,
+        hat_brim_gpu: GpuMesh,
+        hat_ring_gpu: GpuMesh,
 
         // Dynamic vertex buffers (updated in place)
         tail_fill_dyn: DynamicMesh,
@@ -191,6 +202,8 @@ mod imp {
         arm_fill_dyn: [DynamicMesh; 2],
         arm_rim_dyn: [DynamicMesh; 2],
         cable_dyn: DynamicMesh,
+        steam_a_dyn: DynamicMesh,
+        steam_b_dyn: DynamicMesh,
 
         atlas: SpriteAtlas,
     }
@@ -243,7 +256,10 @@ mod imp {
                 unsafe { DCompositionCreateDevice(&dxgi_device)? };
             let dcomp_target = unsafe { dcomp_device.CreateTargetForHwnd(hwnd, true)? };
             let dcomp_visual = unsafe { dcomp_device.CreateVisual()? };
+            let dcomp_effect = unsafe { dcomp_device.CreateEffectGroup()? };
             unsafe {
+                dcomp_effect.SetOpacity2(scene.opacity)?;
+                dcomp_visual.SetEffect(&dcomp_effect)?;
                 dcomp_visual.SetContent(&swap_chain)?;
                 dcomp_target.SetRoot(&dcomp_visual)?;
                 dcomp_device.Commit()?;
@@ -378,6 +394,13 @@ mod imp {
             let mouse_wheel_gpu = upload_static(&device, &mp.wheel_geo)?;
             let mouse_seam_gpu = upload_static(&device, &mp.seam.mesh)?;
             let mouse_btn_gpu = upload_static(&device, &mp.button_geo)?;
+            let cup_body_gpu = upload_static(&device, &scene.cup.body_geo)?;
+            let cup_rim_gpu = upload_static(&device, &scene.cup.rim_geo)?;
+            let cup_handle_gpu = upload_static(&device, &scene.cup.handle_geo)?;
+            let cup_coffee_gpu = upload_static(&device, &scene.cup.coffee_geo)?;
+            let hat_cone_gpu = upload_static(&device, &c.hat_cone_geo)?;
+            let hat_brim_gpu = upload_static(&device, &c.hat_brim_geo)?;
+            let hat_ring_gpu = upload_static(&device, &c.hat_ring_geo)?;
 
             let tail_fill_dyn = upload_dynamic(&device, &c.tail.body.mesh)?;
             let tail_rim_dyn = upload_dynamic(&device, &c.tail.rim.mesh)?;
@@ -390,6 +413,8 @@ mod imp {
                 upload_dynamic(&device, &c.arms[1].limb.rim.mesh)?,
             ];
             let cable_dyn = upload_dynamic(&device, &mp.cable.mesh)?;
+            let steam_a_dyn = upload_dynamic(&device, &scene.cup.steam_a.mesh)?;
+            let steam_b_dyn = upload_dynamic(&device, &scene.cup.steam_b.mesh)?;
 
             let atlas = SpriteAtlas::new()?;
 
@@ -397,9 +422,11 @@ mod imp {
                 device,
                 ctx,
                 swap_chain,
-                _dcomp_device: dcomp_device,
+                dcomp_device,
                 _dcomp_target: dcomp_target,
                 _dcomp_visual: dcomp_visual,
+                dcomp_effect,
+                last_opacity: scene.opacity,
                 sample_count,
                 width: w,
                 height: h,
@@ -461,11 +488,20 @@ mod imp {
                 mouse_wheel_gpu,
                 mouse_seam_gpu,
                 mouse_btn_gpu,
+                cup_body_gpu,
+                cup_rim_gpu,
+                cup_handle_gpu,
+                cup_coffee_gpu,
+                hat_cone_gpu,
+                hat_brim_gpu,
+                hat_ring_gpu,
                 tail_fill_dyn,
                 tail_rim_dyn,
                 arm_fill_dyn,
                 arm_rim_dyn,
                 cable_dyn,
+                steam_a_dyn,
+                steam_b_dyn,
                 atlas,
             };
             r.create_targets()?;
@@ -573,6 +609,18 @@ mod imp {
                 }
                 scene.cat.dynamic_dirty = false;
             }
+            if scene.cup.steam_dirty {
+                write_buf(&self.ctx, &self.steam_a_dyn.vb, &scene.cup.steam_a.mesh.vertices);
+                write_buf(&self.ctx, &self.steam_b_dyn.vb, &scene.cup.steam_b.mesh.vertices);
+                scene.cup.steam_dirty = false;
+            }
+            if (scene.opacity - self.last_opacity).abs() > 1e-3 {
+                self.last_opacity = scene.opacity;
+                unsafe {
+                    let _ = self.dcomp_effect.SetOpacity2(scene.opacity);
+                    let _ = self.dcomp_device.Commit();
+                }
+            }
 
             let Some(rtv) = self.msaa_rtv.clone() else { return };
             let Some(dsv) = self.dsv.clone() else { return };
@@ -628,7 +676,30 @@ mod imp {
             let board_w = scene.keyboard.world_matrix();
             let paw_rim_col = hex_color("#8f8f8a");
 
-            // ===== Order -2: mouse outer shell + hind paw rims =====
+            // ===== Order -2: desk cup, mouse outer shell + hind paw rims =====
+            if scene.cup.visible() {
+                let cw = scene.cup.world_matrix();
+                let hw = scene.cup.handle_world();
+                let cfw = scene.cup.coffee_world();
+                let alpha = scene.cup.opacity;
+                let blend = if alpha < 0.99 { &self.blend_premul } else { &self.blend_opaque };
+                self.set_basic_pipe(&self.rs_back, &self.ds_rw, blend);
+                self.draw_static(&self.cup_rim_gpu, cw, view, hex_color("#2a241f"), alpha, [0.0; 4]);
+                self.set_basic_pipe(&self.rs_front, &self.ds_rw, blend);
+                self.draw_static(&self.cup_body_gpu, cw, view, hex_color("#f7f2e7"), alpha, [0.0; 4]);
+                self.draw_static(&self.cup_handle_gpu, hw, view, hex_color("#efe7d7"), alpha, [0.0; 4]);
+                self.draw_static(&self.cup_coffee_gpu, cfw, view, hex_color("#5b3a24"), alpha, [0.0; 4]);
+                if scene.cup.steam_opacity_a > 0.01 || scene.cup.steam_opacity_b > 0.01 {
+                    self.set_basic_pipe(&self.rs_none, &self.ds_ro, &self.blend_premul);
+                    if scene.cup.steam_opacity_a > 0.01 {
+                        self.draw_dynamic(&self.steam_a_dyn, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_a, [0.0; 4]);
+                    }
+                    if scene.cup.steam_opacity_b > 0.01 {
+                        self.draw_dynamic(&self.steam_b_dyn, Mat4::IDENTITY, view, hex_color("#fbfaf3"), scene.cup.steam_opacity_b, [0.0; 4]);
+                    }
+                }
+            }
+
             self.set_basic_pipe(&self.rs_back, &self.ds_rw, &self.blend_opaque);
             self.draw_static(&self.mouse_dome_gpu, scene.mouse.shell_world(0.03), view, hex_color("#f4f1e6"), 1.0, [0.0; 4]);
 
@@ -663,8 +734,8 @@ mod imp {
             }
 
             self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
-            self.draw_static(&self.kb_case_gpu, board_w, view, hex_color("#252523"), 1.0, [0.0; 4]);
-            self.draw_static(&self.kb_plate_gpu, board_w, view, hex_color("#2b2b28"), 1.0, [0.0; 4]);
+            self.draw_static(&self.kb_case_gpu, board_w, view, scene.keyboard.case_color, 1.0, [0.0; 4]);
+            self.draw_static(&self.kb_plate_gpu, board_w, view, scene.keyboard.plate_color, 1.0, [0.0; 4]);
             if rl.style_3d {
                 self.draw_static(&self.mouse_dome_gpu, scene.mouse.dome_world(), view, [1.0, 1.0, 1.0], 1.0, [1.0, 0.0, 0.0, 0.0]);
             } else {
@@ -689,8 +760,15 @@ mod imp {
             let tail_cap_m = Mat4::from_trs_euler(scene.cat.tail.end_pos, Vec3::ZERO, Vec3::splat(scene.cat.tail.end_scale_fill));
             self.draw_static(&self.cap_end_gpu, tail_cap_m, view, [1.0; 3], 1.0, [0.0, 0.0, 0.0, 4.0]);
 
-            // ===== Order 0~1: collar + bell (with towardEye = 0.07) & mouse cable =====
-            if rl.collar_visible {
+            // ===== Order 0~1: collar / CNY scarf (with towardEye = 0.07) & mouse cable =====
+            let outfit = scene.cat.outfit;
+            if outfit == Festival::Cny {
+                let cw = scene.cat.collar_world().mul(Mat4::from_scale(Vec3::new(1.05, 1.45, 1.05)));
+                self.set_basic_pipe(&self.rs_back, &self.ds_rw, &self.blend_opaque);
+                self.draw_static(&self.collar_rim_gpu, cw, view, hex_color("#7a1d17"), 1.0, [0.0, 0.0, COLLAR_LIFT, 0.0]);
+                self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
+                self.draw_static(&self.collar_fill_gpu, cw, view, hex_color("#d93829"), 1.0, [0.0, 0.0, COLLAR_LIFT, 0.0]);
+            } else if rl.collar_visible {
                 let cw = scene.cat.collar_world();
                 let bh = scene.cat.bell_hang_world();
                 let r_bell: f32 = 0.064;
@@ -724,8 +802,10 @@ mod imp {
                 self.draw_static(&self.bell_glint_gpu, glint_m, view, hex_color("#fff6d8"), 1.0, [0.0, 0.0, COLLAR_LIFT, 0.0]);
             }
 
-            self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
-            self.draw_dynamic(&self.cable_dyn, Mat4::IDENTITY, view, hex_color("#2a2a27"), 1.0, [0.0; 4]);
+            if scene.mouse.cable_visible {
+                self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
+                self.draw_dynamic(&self.cable_dyn, Mat4::IDENTITY, view, hex_color("#2a2a27"), 1.0, [0.0; 4]);
+            }
 
             // ===== Order 2~3: hind paws + toes =====
             for &s in &[-1.0f32, 1.0] {
@@ -801,6 +881,39 @@ mod imp {
                 self.set_basic_pipe(&self.rs_front, &self.ds_none, &self.blend_opaque);
                 self.draw_static(&self.nose_gpu, scene.cat.nose_world(), view, rl.nose_color, 1.0, [0.0; 4]);
                 self.draw_static(&self.mouth_gpu, head_w, view, rl.mouth_color, 1.0, [0.0; 4]);
+            }
+            if scene.cat.yawn_open > 0.03 {
+                self.set_basic_pipe(&self.rs_front, &self.ds_none, &self.blend_opaque);
+                let yw = scene.cat.yawn_world();
+                self.draw_static(&self.disc_gpu, yw, view, hex_color("#4a1b24"), 1.0, [0.0; 4]);
+                let tongue = yw.mul(Mat4::from_trs_euler(Vec3::new(0.0, -0.32, 0.002), Vec3::ZERO, Vec3::new(0.65, 0.48, 1.0)));
+                self.draw_static(&self.disc_gpu, tongue, view, hex_color("#f08a9a"), 1.0, [0.0; 4]);
+            }
+            if scene.cat.lick_out > 0.03 {
+                self.set_basic_pipe(&self.rs_front, &self.ds_none, &self.blend_opaque);
+                self.draw_static(&self.disc_gpu, scene.cat.lick_world(), view, hex_color("#f393a3"), 1.0, [0.0; 4]);
+            }
+            if matches!(outfit, Festival::Xmas | Festival::Halloween | Festival::Birthday) {
+                self.set_basic_pipe(&self.rs_front, &self.ds_rw, &self.blend_opaque);
+                let hr = scene.cat.hat_root_world();
+                match outfit {
+                    Festival::Xmas => {
+                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.28, 0.56, 0.28))), view, hex_color("#d9483b"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.27, 0.27, 0.27))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.56, 0.0), Vec3::ZERO, Vec3::splat(1.3))), view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                    }
+                    Festival::Halloween => {
+                        self.draw_static(&self.hat_brim_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.45, 0.028, 0.45))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.22, 0.60, 0.22))), view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.05, 0.0), Vec3::ZERO, Vec3::new(0.21, 0.18, 0.21))), view, hex_color("#9a6bd1"), 1.0, [0.0; 4]);
+                    }
+                    Festival::Birthday => {
+                        self.draw_static(&self.hat_cone_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.54, 0.21))), view, hex_color("#ee8fb4"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.hat_ring_gpu, hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.16, 0.21))), view, hex_color("#70c4b8"), 1.0, [0.0; 4]);
+                        self.draw_static(&self.bell_ball_gpu, hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.54, 0.0), Vec3::ZERO, Vec3::splat(1.15))), view, hex_color("#f2c94c"), 1.0, [0.0; 4]);
+                    }
+                    _ => {}
+                }
             }
 
             // ===== Order 18~23: front paw rims, arm rims/bodies (with ARM_ROOT_PUSH), front paws/toes =====

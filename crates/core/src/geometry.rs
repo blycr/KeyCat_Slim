@@ -306,6 +306,38 @@ pub fn cylinder_open(r_top: f32, r_bot: f32, height: f32, radial: usize) -> Mesh
     mesh
 }
 
+/// Closed cylinder / frustum / cone (pass `r_top = 0.0` for a cone), centered at `y = 0`.
+pub fn cylinder_capped(r_top: f32, r_bot: f32, height: f32, radial: usize) -> MeshData {
+    let mut mesh = cylinder_open(r_top, r_bot, height, radial);
+    let half_h = height * 0.5;
+    if r_top > 1e-5 {
+        let center = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex::new(Vec3::new(0.0, half_h, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        for i in 0..=radial {
+            let theta = (i as f32 / radial as f32) * TAU;
+            let (s, c) = theta.sin_cos();
+            mesh.vertices.push(Vertex::new(Vec3::new(r_top * s, half_h, r_top * c), Vec3::new(0.0, 1.0, 0.0)));
+        }
+        for i in 0..(radial as u32) {
+            mesh.indices.extend_from_slice(&[center, center + 1 + i, center + 2 + i]);
+        }
+    }
+    if r_bot > 1e-5 {
+        let center = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex::new(Vec3::new(0.0, -half_h, 0.0), Vec3::new(0.0, -1.0, 0.0)));
+        for i in 0..=radial {
+            let theta = (i as f32 / radial as f32) * TAU;
+            let (s, c) = theta.sin_cos();
+            mesh.vertices.push(Vertex::new(Vec3::new(r_bot * s, -half_h, r_bot * c), Vec3::new(0.0, -1.0, 0.0)));
+        }
+        for i in 0..(radial as u32) {
+            mesh.indices.extend_from_slice(&[center, center + 2 + i, center + 1 + i]);
+        }
+    }
+    mesh.compute_bounds();
+    mesh
+}
+
 /// Three.js `TorusGeometry(radius, tube, radialSegments, tubularSegments)`.
 pub fn torus(radius: f32, tube: f32, radial: usize, tubular: usize) -> MeshData {
     let mut vertices = Vec::with_capacity((radial + 1) * (tubular + 1));

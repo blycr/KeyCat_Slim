@@ -65,6 +65,9 @@ final class MetalCatView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let app, let window else { return }
         if app.hit == UInt32(KC_HIT_PET) {
+            if event.clickCount == 2 {
+                app.doubleClickHead()
+            }
             petting = true
             app.pet(down: true, x: pagePoint(event).x)
         } else {

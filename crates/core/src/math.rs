@@ -249,6 +249,26 @@ impl Quat {
             w: cx * cy * cz - sx * sy * sz,
         }
     }
+
+    pub fn from_axis_angle(axis: Vec3, angle: f32) -> Self {
+        let (s, c) = (angle * 0.5).sin_cos();
+        Self { x: axis.x * s, y: axis.y * s, z: axis.z * s, w: c }
+    }
+
+    pub fn mul(self, rhs: Self) -> Self {
+        Self {
+            x: self.w * rhs.x + self.x * rhs.w + self.y * rhs.z - self.z * rhs.y,
+            y: self.w * rhs.y - self.x * rhs.z + self.y * rhs.w + self.z * rhs.x,
+            z: self.w * rhs.z + self.x * rhs.y - self.y * rhs.x + self.z * rhs.w,
+            w: self.w * rhs.w - self.x * rhs.x - self.y * rhs.y - self.z * rhs.z,
+        }
+    }
+
+    pub fn rotate_vec(self, v: Vec3) -> Vec3 {
+        let qv = Vec3::new(self.x, self.y, self.z);
+        let t = qv.cross(v) * 2.0;
+        v + t * self.w + qv.cross(t)
+    }
 }
 
 /// Column-major 4x4 matrix (`cols[col][row]`), identical layout to Three.js `Matrix4.elements`.

@@ -40,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let defaults = UserDefaults.standard
     lazy var settings = SettingsWindow(app: self)
     lazy var updater = UpdateChecker(app: self)
+    private var purrAudio: PurrAudio?
+    private var lastClockSync: CFTimeInterval = -100
+    var pomodoro = false
 
     // MARK: Persisted settings (same keys as previous macOS builds for seamless upgrade)
 
@@ -67,6 +70,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { defaults.string(forKey: "eyeShine") ?? "classic" }
         set { defaults.set(newValue, forKey: "eyeShine") }
     }
+    var gloves: String {
+        get { defaults.string(forKey: "gloves") ?? "auto" }
+        set { defaults.set(newValue, forKey: "gloves") }
+    }
     var blush: Bool {
         get { defaults.bool(forKey: "blush") }
         set { defaults.set(newValue, forKey: "blush") }
@@ -78,6 +85,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var collar: String {
         get { defaults.string(forKey: "collar") ?? "none" }
         set { defaults.set(newValue, forKey: "collar") }
+    }
+    var festival: Bool {
+        get { defaults.object(forKey: "festival") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "festival") }
+    }
+    var keyboardColor: String {
+        get { defaults.string(forKey: "keyboardColor") ?? "cream" }
+        set { defaults.set(newValue, forKey: "keyboardColor") }
+    }
+    var mouseCable: Bool {
+        get { defaults.object(forKey: "mouseCable") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "mouseCable") }
+    }
+    var cup: Bool {
+        get { defaults.object(forKey: "cup") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "cup") }
+    }
+    var opacity: Double {
+        get {
+            let v = defaults.object(forKey: "opacity") as? Double ?? 1.0
+            return min(max(v, 0.35), 1.0)
+        }
+        set {
+            let clamped = min(max(newValue, 0.35), 1.0)
+            defaults.set(clamped, forKey: "opacity")
+            panel?.alphaValue = CGFloat(clamped)
+        }
+    }
+    var sound: Bool {
+        get { defaults.bool(forKey: "sound") }
+        set { defaults.set(newValue, forKey: "sound") }
     }
     var tune: [String: Any] {
         get { defaults.dictionary(forKey: "tune") ?? [:] }
@@ -161,6 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.contentView = catView
 
         applyScale(scale, keepOrigin: false)
+        purrAudio = PurrAudio()
+        if let mem = defaults.string(forKey: "memory"), !mem.isEmpty {
+            mem.withCString { kc_scene_load_memory_json(scene, $0) }
+        }
+        syncLocalClock(now: CACurrentMediaTime(), force: true)
         pushOptions()
         kc_scene_step(scene, 1.0 / 60.0)
         renderer.render(scene: scene, layer: catView.metalLayer)
@@ -204,6 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             CFMachPortInvalidate(tap)
             eventTap = nil
         }
+        flushMemory(force: true)
+        purrAudio?.stop()
+        purrAudio = nil
         if let s = scene {
             kc_scene_free(s)
             scene = nil
@@ -259,25 +305,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func pushOptions() {
         guard let scene else { return }
         let style3d: UInt8 = style == "3d" ? 1 : 0
+        let op = Float(opacity)
         coat.withCString { cCoat in
             pattern.withCString { cPat in
                 eyeColor.withCString { cEye in
                     eyeShine.withCString { cShine in
                         collar.withCString { cCollar in
-                            kc_scene_set_look(
-                                scene, style3d, cCoat, cPat, cEye, cShine, cCollar,
-                                blush ? 1 : 0, whiskers ? 1 : 0
-                            )
+                            gloves.withCString { cGloves in
+                                keyboardColor.withCString { cKb in
+                                    kc_scene_set_look_ext(
+                                        scene, style3d, cCoat, cPat, cEye, cShine, cCollar,
+                                        blush ? 1 : 0, whiskers ? 1 : 0,
+                                        cGloves, cKb, mouseCable ? 1 : 0, op,
+                                        cup ? 1 : 0, festival ? 1 : 0, sound ? 1 : 0
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        kc_scene_set_options(scene, privacy ? 1 : 0, sleepAfter > 0 ? Float(sleepAfter) : 1e9)
+        panel?.alphaValue = CGFloat(op)
+        kc_scene_set_options(scene, privacy ? 1 : 0, sleepAfter > 0 ? Float(sleepAfter) : 0)
         if let data = try? JSONSerialization.data(withJSONObject: tune),
            let json = String(data: data, encoding: .utf8) {
             json.withCString { kc_scene_set_tuning_json(scene, $0) }
         }
+    }
+
+    private func syncLocalClock(now: CFTimeInterval, force: Bool = false) {
+        guard let scene else { return }
+        guard force || now - lastClockSync >= 30.0 else { return }
+        lastClockSync = now
+        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: Date())
+        let year = Int32(comps.year ?? 2026)
+        let month = UInt32(comps.month ?? 1)
+        let day = UInt32(comps.day ?? 1)
+        let hour = Float(comps.hour ?? 12) + Float(comps.minute ?? 0) / 60.0
+        kc_scene_set_clock(scene, year, month, day, hour)
+    }
+
+    private func flushMemory(force: Bool) {
+        guard let scene else { return }
+        if let ptr = kc_scene_take_memory_json(scene, force ? 1 : 0) {
+            let str = String(cString: ptr)
+            kc_string_free(ptr)
+            defaults.set(str, forKey: "memory")
+        }
+    }
+
+    func togglePomodoro() {
+        guard let scene else { return }
+        pomodoro.toggle()
+        if pomodoro && !panel.isVisible { setPanelVisible(true) }
+        kc_scene_set_pomodoro(scene, pomodoro ? 1 : 0)
+        rescheduleFrameLoop()
+    }
+
+    func doubleClickHead() {
+        guard let scene else { return }
+        kc_scene_on_double_click(scene)
+        rescheduleFrameLoop()
+    }
+
+    func applyPreset(_ index: Int) {
+        guard let scene, index >= 0 else { return }
+        kc_scene_apply_preset(scene, UInt32(index))
+        let count = Int(kc_tuning_count())
+        var t: [String: Any] = [:]
+        for i in 0..<count {
+            let m = kc_tuning_meta(UInt32(i))
+            guard let key = m.key.map({ String(cString: $0) }), !key.isEmpty else { continue }
+            let v = key.withCString { kc_scene_get_tuning_value(scene, $0) }
+            t[key] = m.is_toggle != 0 ? (v >= 0.5) : Double(v)
+        }
+        tune = t
+    }
+
+    func matchingPreset() -> Int {
+        guard let scene else { return -1 }
+        return Int(kc_scene_matching_preset(scene))
     }
 
     func tuningValue(for key: String) -> Float {
@@ -322,6 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             rescheduleFrameLoop()
         } else {
             stopFrameLoop()
+            purrAudio?.pause()
             catView.cancelInteractions()
             if let scene {
                 for (_, code) in heldKeys {
@@ -403,11 +512,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let now = CACurrentMediaTime()
+        syncLocalClock(now: now)
         reconcileHeldKeys(now: now, scene: scene)
         let dt = Float(min(0.1, max(0.0, now - lastFrameTime)))
         lastFrameTime = now
 
         kc_scene_step(scene, dt)
+        purrAudio?.sync(scene: scene)
+        flushMemory(force: false)
         let currentHit = kc_scene_hit(scene)
         if currentHit != hit {
             hit = currentHit

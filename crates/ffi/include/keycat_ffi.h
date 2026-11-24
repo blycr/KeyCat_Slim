@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 typedef struct KcScene KcScene;
+typedef struct KcAudio KcAudio;
 
 /* Hit zones */
 enum {
@@ -80,9 +81,16 @@ enum {
     KC_MESH_WHISKER_3   = 30,
     KC_MESH_WHISKER_4   = 31,
     KC_MESH_WHISKER_5   = 32,
-    KC_MESH_EAR_FILL    = 33, /* dynamic per coat ear_key */
-    KC_MESH_EAR_RIM     = 34, /* dynamic per coat ear_key */
-    KC_MESH_STATIC_COUNT = 33,
+    KC_MESH_CUP_BODY    = 33,
+    KC_MESH_CUP_RIM     = 34,
+    KC_MESH_CUP_HANDLE  = 35,
+    KC_MESH_CUP_COFFEE  = 36,
+    KC_MESH_HAT_CONE    = 37,
+    KC_MESH_HAT_BRIM    = 38,
+    KC_MESH_HAT_RING    = 39,
+    KC_MESH_EAR_FILL    = 40, /* dynamic per coat ear_key */
+    KC_MESH_EAR_RIM     = 41, /* dynamic per coat ear_key */
+    KC_MESH_STATIC_COUNT = 40,
 };
 
 /* Dynamic mesh IDs */
@@ -94,7 +102,9 @@ enum {
     KC_DYN_ARM_RIM_0  = 4,
     KC_DYN_ARM_FILL_1 = 5,
     KC_DYN_ARM_RIM_1  = 6,
-    KC_DYN_COUNT      = 7,
+    KC_DYN_STEAM_A    = 7,
+    KC_DYN_STEAM_B    = 8,
+    KC_DYN_COUNT      = 9,
 };
 
 /* Sprite kinds */
@@ -104,6 +114,8 @@ enum {
     KC_SPRITE_ANGER   = 2,
     KC_SPRITE_BANG    = 3,
     KC_SPRITE_DUST    = 4,
+    KC_SPRITE_HEART   = 5,
+    KC_SPRITE_BUBBLE  = 6,
 };
 
 typedef struct {
@@ -182,7 +194,9 @@ typedef struct {
     uint8_t   kb_dirty;
     uint8_t   cable_dirty;
     uint8_t   cat_dyn_dirty;
+    uint8_t   steam_dirty;
     uint8_t   is_busy;
+    float     opacity;
     const KcDrawCmd   *draws;
     uint32_t           draw_count;
     const KcSpriteCmd *sprites;
@@ -214,6 +228,7 @@ uint32_t kc_scene_on_cursor(KcScene *s, float x, float y);
 void     kc_scene_on_mouse_move(KcScene *s, float dx, float dy);
 void     kc_scene_on_mouse_button(KcScene *s, uint8_t down);
 void     kc_scene_on_pet(KcScene *s, uint8_t down, float x);
+void     kc_scene_on_double_click(KcScene *s);
 uint32_t kc_scene_hit(const KcScene *s);
 
 void     kc_scene_set_look(
@@ -227,11 +242,37 @@ void     kc_scene_set_look(
     uint8_t blush,
     uint8_t whiskers
 );
+void     kc_scene_set_look_ext(
+    KcScene *s,
+    uint8_t style_3d,
+    const char *coat,
+    const char *pattern,
+    const char *eye,
+    const char *shine,
+    const char *collar,
+    uint8_t blush,
+    uint8_t whiskers,
+    const char *gloves,
+    const char *keyboard_color,
+    uint8_t mouse_cable,
+    float opacity,
+    uint8_t cup,
+    uint8_t festival,
+    uint8_t sound
+);
 void     kc_scene_set_options(KcScene *s, uint8_t privacy, float sleep_after);
+void     kc_scene_set_clock(KcScene *s, int32_t year, uint32_t month, uint32_t day, float hour);
+void     kc_scene_set_pomodoro(KcScene *s, uint8_t on);
+void     kc_scene_load_memory_json(KcScene *s, const char *json_str);
+char    *kc_scene_take_memory_json(KcScene *s, uint8_t force);
+void     kc_string_free(char *ptr);
+
 void     kc_scene_set_tuning_json(KcScene *s, const char *json_str);
 void     kc_scene_set_tuning_value(KcScene *s, const char *key, float value);
 float    kc_scene_get_tuning_value(const KcScene *s, const char *key);
 void     kc_scene_reset_tuning(KcScene *s);
+void     kc_scene_apply_preset(KcScene *s, uint32_t index);
+int32_t  kc_scene_matching_preset(const KcScene *s);
 void     kc_scene_annoy_now(KcScene *s);
 void     kc_scene_curious_now(KcScene *s, float seconds);
 
@@ -244,6 +285,15 @@ KcFrameData kc_scene_prepare_frame(KcScene *s);
 
 uint32_t     kc_tuning_count(void);
 KcTuningMeta kc_tuning_meta(uint32_t index);
+uint32_t     kc_preset_count(void);
+const char  *kc_preset_name(uint32_t index);
+const char  *kc_preset_hint(uint32_t index);
+
+/* Procedural purr audio synthesizer (thread-safe via caller synchronization) */
+KcAudio *kc_audio_new(uint32_t sample_rate);
+void     kc_audio_free(KcAudio *a);
+uint8_t  kc_audio_sync_from_scene(KcAudio *a, const KcScene *s);
+void     kc_audio_fill_f32(KcAudio *a, float *out, uint32_t len);
 
 #ifdef __cplusplus
 }

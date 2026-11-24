@@ -3,11 +3,14 @@
 
 use crate::coats::{shine_dots, Look, ResolvedLook};
 use crate::geometry::{
-    cat_nose, circle, full_sphere, lathe, plane, torus, MeshData, TaperTube,
+    cat_nose, circle, cylinder_capped, full_sphere, lathe, plane, torus, MeshData, TaperTube,
 };
+use crate::life::Festival;
 use crate::math::{
     clamp, mix, smooth, spline_2d_points, CatmullRom3, Mat4, Quat, Vec2, Vec3, PI,
 };
+
+const TAIL_N: usize = 10;
 
 pub const BODY_H: f32 = 1.32;
 pub const HOME: Vec3 = Vec3::new(0.02, 0.0, 0.05);
@@ -135,12 +138,17 @@ pub struct Cat {
     pub bell_slit_geo: MeshData,
     pub bell_glint_geo: MeshData,
     pub bell_loop_geo: MeshData,
+    // Festival hat geometries (reused across xmas / halloween / birthday)
+    pub hat_cone_geo: MeshData,
+    pub hat_brim_geo: MeshData,
+    pub hat_ring_geo: MeshData,
     collar_r: f32,
     outline_pts: Vec<Vec3>,
 
     // Dynamic state & transforms
     pub look: Look,
     pub resolved: ResolvedLook,
+    pub outfit: Festival,
     pub bend: Bend,
     pub body_pos: Vec3,
     pub body_rot: Vec3,
@@ -155,7 +163,13 @@ pub struct Cat {
     pub ears: [EarState; 2],
     pub eyes: [EyeState; 2],
     pub blush_opacity: f32,
+    pub yawn_open: f32,
+    pub lick_out: f32,
     pub tail_curve: CatmullRom3,
+    tail_chain: Vec<Vec3>,
+    tail_prev: Vec<Vec3>,
+    tail_link_len: f32,
+    tail_chain_fresh: bool,
     pub tail: LimbMeshes,
     pub arms: [ArmState; 2],
     pub dynamic_dirty: bool,
@@ -275,6 +289,13 @@ impl Cat {
         let bell_glint_geo = circle(0.015, 12, 0.0, PI * 2.0);
         let bell_loop_geo = torus(0.02, 0.007, 8, 16);
 
+        // Unit festival hat primitives (scaled per outfit in renderer)
+        let mut hat_cone_geo = cylinder_capped(0.0, 1.0, 1.0, 28);
+        hat_cone_geo.translate(0.0, 0.5, 0.0);
+        let hat_brim_geo = cylinder_capped(1.0, 1.0, 1.0, 32);
+        let mut hat_ring_geo = torus(1.0, 0.22, 10, 28);
+        hat_ring_geo.rotate_x(PI * 0.5);
+
         let eyes = [-1.0f32, 1.0].map(|s| {
             let lx = s * 0.235;
             let ly = 0.04;
@@ -311,6 +332,12 @@ impl Cat {
 
         let tail_pts = tail_rest_pts();
         let tail_curve = CatmullRom3::new(tail_pts.to_vec(), false, 0.5);
+        let sampled_tail = tail_curve.get_spaced_points(TAIL_N);
+        let mut total_tail_len = 0.0f32;
+        for w in sampled_tail.windows(2) {
+            total_tail_len += w[0].distance(w[1]);
+        }
+        let tail_link_len = (total_tail_len / TAIL_N as f32).max(0.05);
         let tail = LimbMeshes::new(28, 14, false, true);
 
         let arms = [-1.0f32, 1.0].map(|s| ArmState {
@@ -347,10 +374,14 @@ impl Cat {
             bell_slit_geo,
             bell_glint_geo,
             bell_loop_geo,
+            hat_cone_geo,
+            hat_brim_geo,
+            hat_ring_geo,
             collar_r,
             outline_pts,
             look,
             resolved,
+            outfit: Festival::None,
             bend: Bend::default(),
             body_pos: HOME,
             body_rot: Vec3::ZERO,
@@ -365,7 +396,13 @@ impl Cat {
             ears,
             eyes,
             blush_opacity: 0.0,
+            yawn_open: 0.0,
+            lick_out: 0.0,
             tail_curve,
+            tail_chain: vec![Vec3::ZERO; TAIL_N + 1],
+            tail_prev: vec![Vec3::ZERO; TAIL_N + 1],
+            tail_link_len,
+            tail_chain_fresh: true,
             tail,
             arms,
             dynamic_dirty: true,
@@ -465,6 +502,51 @@ impl Cat {
         self.head_world().mul(Mat4::from_trs(Vec3::new(0.0, ny, nz + 0.006), q, Vec3::ONE))
     }
 
+    /// World transform for the chibi open-mouth yawn oval on the face.
+    pub fn yawn_world(&self) -> Mat4 {
+        let yy = -0.25;
+        let yz = face_z(0.0, yy);
+        let n = Vec3::new(0.0, yy / (HEAD_R.y * HEAD_R.y), yz / (HEAD_R.z * HEAD_R.z)).normalize();
+        let q = Quat::from_unit_vectors(Vec3::new(0.0, 0.0, 1.0), n);
+        let open = clamp(self.yawn_open, 0.0, 1.0);
+        let sx = 0.095 * (0.75 + 0.35 * open);
+        let sy = 0.115 * open.max(0.01);
+        self.head_world().mul(Mat4::from_trs(
+            Vec3::new(0.0, yy - 0.03 * open, yz + 0.009),
+            q,
+            Vec3::new(sx, sy, 1.0),
+        ))
+    }
+
+    /// World transform for the pink tongue tip sticking out while grooming.
+    pub fn lick_world(&self) -> Mat4 {
+        let ly = -0.21;
+        let lz = face_z(0.0, ly);
+        let n = Vec3::new(0.0, ly / (HEAD_R.y * HEAD_R.y), lz / (HEAD_R.z * HEAD_R.z)).normalize();
+        let q = Quat::from_unit_vectors(Vec3::new(0.0, 0.0, 1.0), n);
+        let out = clamp(self.lick_out, 0.0, 1.0);
+        self.head_world().mul(Mat4::from_trs(
+            Vec3::new(0.0, ly - 0.04 * out, lz + 0.011),
+            q,
+            Vec3::new(0.048, 0.068 * out.max(0.01), 1.0),
+        ))
+    }
+
+    /// World transform for the festival hat anchored on top of the head.
+    pub fn hat_root_world(&self) -> Mat4 {
+        let (x, y, rz) = match self.outfit {
+            Festival::Xmas => (0.06, 0.38, -0.34),
+            Festival::Halloween => (0.04, 0.42, -0.22),
+            Festival::Birthday => (0.05, 0.40, -0.28),
+            _ => (0.0, 0.40, 0.0),
+        };
+        self.head_world().mul(Mat4::from_trs_euler(
+            Vec3::new(x, y, -0.02),
+            Vec3::new(-0.08, 0.0, rz),
+            Vec3::ONE,
+        ))
+    }
+
     pub fn hind_paw_world(&self, side: f32, rim: bool) -> Mat4 {
         let scale = if rim {
             Vec3::new(0.186, 0.114, 0.166)
@@ -509,7 +591,7 @@ impl Cat {
     }
 
     pub fn place_collar(&mut self) {
-        if !self.resolved.collar_visible {
+        if !self.resolved.collar_visible && self.outfit != Festival::Cny {
             return;
         }
         let y = COLLAR_Y - 0.3 * clamp(self.head_pivot_rot.x + 0.1, 0.0, 0.6);
@@ -532,26 +614,39 @@ impl Cat {
         turn_ear_state(&mut self.ears[i], z, x);
     }
 
-    pub fn update_arm(&mut self, i: usize, paw_pos: Vec3) {
+    pub fn update_arm(&mut self, i: usize, paw_pos: Vec3, sprawl: f32) {
         let shoulder = self.attach(self.arms[i].shoulder_local);
         let arm = &mut self.arms[i];
         arm.shoulder = shoulder;
         arm.hand = paw_pos;
         let a = arm.shoulder;
-        let b = arm.hand;
+        // Tuck the wrist end slightly inside the paw mesh so the arm tube never pokes out.
+        let to_shoulder = (a - paw_pos).normalize();
+        let b = paw_pos + Vec3::new(to_shoulder.x * 0.035, 0.015, to_shoulder.z * 0.035);
         let reach = a.distance(b);
         let fold = clamp(1.4 - reach / 0.9, 0.25, 1.0);
         let swing = smooth(0.7, 1.3, reach);
-        let c1 = Vec3::new(
+        let mut c1 = Vec3::new(
             a.x + arm.side * 0.1 * fold + (b.x - a.x) * mix(0.15, 0.4, swing),
             a.y - reach * mix(0.32, 0.2, swing),
             a.z + 0.06 + (b.z - a.z) * 0.25,
         );
-        let c2 = Vec3::new(
+        let mut c2 = Vec3::new(
             b.x - (b.x - a.x) * 0.12,
             b.y + reach * 0.3,
             b.z - (b.z - a.z) * 0.18,
         );
+        // When sprawling / lying forward, bend cleanly at an outer elbow resting near the desk.
+        if sprawl > 0.01 {
+            let elbow = Vec3::new(
+                mix(a.x, b.x, 0.48) + arm.side * 0.22,
+                mix(a.y, b.y, 0.65).max(0.24),
+                mix(a.z, b.z, 0.45),
+            );
+            let k = clamp(sprawl, 0.0, 1.0);
+            c1 = c1.lerp(a.lerp(elbow, 0.85), k);
+            c2 = c2.lerp(b.lerp(elbow, 0.78), k);
+        }
         arm.c1 = c1;
         arm.c2 = c2;
         arm.limb.update(
@@ -559,14 +654,15 @@ impl Cat {
                 let u = 1.0 - t;
                 a * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + b * (t * t * t)
             },
-            |t| mix(0.135, 0.092, smooth(0.0, 0.72, t)) + 0.014 * smooth(0.8, 1.0, t),
+            |t| mix(0.135, 0.088, smooth(0.0, 0.76, t)) + 0.008 * smooth(0.82, 1.0, t),
             |t| mix(-0.03, 0.012, smooth(0.14, 0.42, t)),
         );
-        arm.paw_yaw = (b.x - c2.x).atan2(b.z - c2.z);
-        arm.paw_pos = b;
+        arm.paw_yaw = (paw_pos.x - c2.x).atan2(paw_pos.z - c2.z);
+        arm.paw_pos = paw_pos;
         self.dynamic_dirty = true;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_tail(
         &mut self,
         time: f32,
@@ -577,15 +673,18 @@ impl Cat {
         lash: f32,
         reach: f32,
         reach_tip: Option<Vec3>,
+        wrap: f32,
+        dt: f32,
     ) {
         let rest_pts = tail_rest_pts();
         let sleep_pts = tail_sleep_pts();
         let thump_pts = tail_thump_pts();
         let n = rest_pts.len();
-        let mut pts = Vec::with_capacity(n);
+        let curl = sleep.max(wrap);
+        let mut want_pts = Vec::with_capacity(n);
         for i in 0..n {
             let w = i as f32 / (n - 1) as f32;
-            let mut local = rest_pts[i].lerp(sleep_pts[i], sleep);
+            let mut local = rest_pts[i].lerp(sleep_pts[i], curl);
             if thump > 0.0 {
                 let mut tt = thump_pts[i];
                 tt.y += lift * 1.05 * w.powf(1.4);
@@ -593,15 +692,13 @@ impl Cat {
                 tt.z += lash * 0.35 * w.powf(1.5);
                 local = local.lerp(tt, thump);
             }
-            local.x += (time * 1.6 + i as f32 * 0.7).sin() * 0.04 * w * sway;
-            local.y += (time * 1.3 + i as f32 * 0.9).sin() * 0.05 * w * w * sway;
             let attached = self.attach(local);
             let loose = local + HOME + (self.body_pos - HOME) * 0.3;
-            pts.push(attached.lerp(loose, smooth(0.1, 0.7, w)));
+            want_pts.push(attached.lerp(loose, smooth(0.1, 0.7, w)));
         }
         if reach > 0.0 {
             if let Some(tip) = reach_tip {
-                let root = pts[0];
+                let root = want_pts[0];
                 let reach_path = [
                     Vec3::new(root.x + 0.36, 0.3, root.z + 0.14),
                     Vec3::new(tip.x + 0.34, 0.31, mix(root.z, tip.z, 0.55)),
@@ -609,10 +706,84 @@ impl Cat {
                     Vec3::new(tip.x + 0.11, mix(0.33, tip.y + 0.02, 0.5), tip.z + 0.02),
                     tip,
                 ];
-                for i in 1..pts.len() {
-                    pts[i] = pts[i].lerp(reach_path[i - 1], reach * if i == 1 { 0.6 } else { 1.0 });
+                for i in 1..want_pts.len() {
+                    want_pts[i] = want_pts[i].lerp(reach_path[i - 1], reach * if i == 1 { 0.6 } else { 1.0 });
                 }
             }
+        }
+
+        // Fixed-length chain with travelling wave & Verlet inertia so the tail never stretches.
+        let want_curve = CatmullRom3::new(want_pts, false, 0.5);
+        let sampled = want_curve.get_spaced_points(TAIL_N);
+        let mut goal = vec![Vec3::ZERO; TAIL_N + 1];
+        goal[0] = sampled[0];
+        let y_up = Vec3::new(0.0, 1.0, 0.0);
+        let mut bend_q = Quat::IDENTITY;
+        for i in 1..=TAIL_N {
+            let w = i as f32 / TAIL_N as f32;
+            let dir = (sampled[i] - sampled[i - 1]).normalize();
+            let q_yaw = Quat::from_axis_angle(
+                y_up,
+                0.05 * sway * (time * 1.6 - i as f32 * 0.45).sin(),
+            );
+            bend_q = q_yaw.mul(bend_q);
+            let mut axis = dir.cross(y_up);
+            if axis.length_sq() < 1e-4 {
+                axis = Vec3::new(0.0, 0.0, 1.0);
+            } else {
+                axis = axis.normalize();
+            }
+            let q_curl = Quat::from_axis_angle(
+                axis,
+                0.06 * sway * w * w * (time * 1.3 - i as f32 * 0.6).sin(),
+            );
+            bend_q = q_curl.mul(bend_q);
+            let step_dir = bend_q.rotate_vec(dir);
+            goal[i] = goal[i - 1] + step_dir * self.tail_link_len;
+        }
+
+        if self.tail_chain_fresh
+            || dt > 0.25
+            || self.tail_chain[0].distance_sq(goal[0]) > 0.04
+        {
+            self.tail_chain.copy_from_slice(&goal);
+            self.tail_prev.copy_from_slice(&goal);
+            self.tail_chain_fresh = false;
+        } else {
+            let f = (dt * 60.0).min(3.0);
+            let keep = 0.86f32.powf(f);
+            self.tail_chain[0] = goal[0];
+            self.tail_prev[0] = goal[0];
+            for i in 1..=TAIL_N {
+                let prev = self.tail_prev[i];
+                let mut q = self.tail_chain[i];
+                let vel = (q - prev) * keep;
+                self.tail_prev[i] = q;
+                let pull = 1.0 - (1.0 - mix(0.5, 0.17, i as f32 / TAIL_N as f32)).powf(f);
+                q = (q + vel).lerp(goal[i], pull);
+                let anchor = self.tail_chain[i - 1];
+                let d = q - anchor;
+                let len = d.length();
+                q = if len > 1e-5 {
+                    anchor + d * (self.tail_link_len / len)
+                } else {
+                    goal[i]
+                };
+                if q.y < 0.05 {
+                    q.y = 0.05;
+                }
+                self.tail_chain[i] = q;
+            }
+        }
+
+        // Blend toward exact reach_tip during Space bar tail-pat so the tip hits the keycap cleanly.
+        let mut pts = Vec::with_capacity(TAIL_N + 1);
+        for i in 0..=TAIL_N {
+            let mut p = self.tail_chain[i];
+            if reach > 0.0 {
+                p = p.lerp(sampled[i], reach);
+            }
+            pts.push(p);
         }
         self.tail_curve.points = pts;
         let curve = &self.tail_curve;

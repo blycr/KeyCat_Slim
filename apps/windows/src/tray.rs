@@ -1,4 +1,4 @@
-//! Native Win32 notification area icon (`Shell_NotifyIconW`) and dynamic popup menu.
+//! Native Win32 notification area icon (`Shell_NotifyIconW`) and grouped popup menu.
 
 #[cfg(windows)]
 mod imp {
@@ -20,22 +20,30 @@ mod imp {
 
     pub const WM_TRAY: u32 = WM_APP + 1;
 
+    pub const CMD_TOGGLE_POMODORO: u32 = 1000;
     pub const CMD_TOGGLE_3D: u32 = 1001;
     pub const CMD_COAT_BASE: u32 = 1100; // + coat index
     pub const CMD_PATTERN_SOLID: u32 = 1200;
     pub const CMD_PATTERN_TABBY: u32 = 1201;
     pub const CMD_EYE_BASE: u32 = 1300;
     pub const CMD_SHINE_BASE: u32 = 1320;
+    pub const CMD_GLOVE_BASE: u32 = 1330;
     pub const CMD_COLLAR_BASE: u32 = 1340;
     pub const CMD_TOGGLE_BLUSH: u32 = 1360;
     pub const CMD_TOGGLE_WHISKERS: u32 = 1361;
+    pub const CMD_TOGGLE_FESTIVAL: u32 = 1362;
     pub const CMD_SCALE_BASE: u32 = 1400;
+    pub const CMD_KB_COLOR_BASE: u32 = 1420;
+    pub const CMD_TOGGLE_CABLE: u32 = 1430;
+    pub const CMD_TOGGLE_CUP: u32 = 1431;
+    pub const CMD_OPACITY_BASE: u32 = 1440;
     pub const CMD_FPS_AUTO: u32 = 1449;
     pub const CMD_FPS_30: u32 = 1450;
     pub const CMD_FPS_60: u32 = 1451;
     pub const CMD_FPS_HIGH: u32 = 1452;
     pub const CMD_FPS_UNLIM: u32 = 1453;
     pub const CMD_SLEEP_BASE: u32 = 1500;
+    pub const CMD_TOGGLE_SOUND: u32 = 1520;
     pub const CMD_TOGGLE_PRIVACY: u32 = 1600;
     pub const CMD_TOGGLE_CLICK_THROUGH: u32 = 1601;
     pub const CMD_OPEN_SETTINGS: u32 = 1602;
@@ -60,12 +68,33 @@ mod imp {
         ("闪亮", "sparkle"),
     ];
 
+    pub const GLOVE_OPTIONS: &[(&str, &str)] = &[
+        ("跟随毛色", "auto"),
+        ("白色", "white"),
+        ("黑色", "black"),
+        ("粉色", "pink"),
+    ];
+
     pub const COLLAR_OPTIONS: &[(&str, &str)] = &[
         ("无", "none"),
         ("红色铃铛", "red"),
         ("蓝色铃铛", "blue"),
         ("粉色铃铛", "pink"),
         ("绿色铃铛", "green"),
+    ];
+
+    pub const KB_COLOR_OPTIONS: &[(&str, &str)] = &[
+        ("奶白", "cream"),
+        ("黑灰", "dark"),
+        ("樱粉", "pink"),
+        ("薄荷", "mint"),
+    ];
+
+    pub const OPACITY_OPTIONS: &[(&str, f64)] = &[
+        ("不透明", 1.0),
+        ("85%", 0.85),
+        ("70%", 0.70),
+        ("55%", 0.55),
     ];
 
     pub const SCALE_OPTIONS: &[(&str, f64)] = &[
@@ -92,18 +121,26 @@ mod imp {
     }
 
     pub struct MenuState<'a> {
+        pub pomodoro: bool,
         pub style_3d: bool,
         pub coat: &'a str,
         pub pattern: &'a str,
         pub eye: &'a str,
         pub shine: &'a str,
+        pub gloves: &'a str,
         pub collar: &'a str,
         pub blush: bool,
         pub whiskers: bool,
+        pub festival: bool,
         pub scale: f64,
+        pub keyboard_color: &'a str,
+        pub mouse_cable: bool,
+        pub cup: bool,
+        pub opacity: f64,
         pub fps: FpsMode,
         pub high_fps: Option<u32>,
         pub sleep_after: f64,
+        pub sound: bool,
         pub privacy: bool,
         pub click_through: bool,
         pub autostart: Mode,
@@ -181,31 +218,45 @@ mod imp {
         let _ = AppendMenuW(parent, MF_POPUP, sub.0 as usize, PCWSTR(w.as_ptr()));
     }
 
-    /// Displays the native popup menu at the cursor and returns the chosen command ID (or 0).
+    /// Displays the grouped native popup menu at the cursor and returns the chosen command ID (or 0).
     pub fn show_menu(hwnd: HWND, st: &MenuState<'_>) -> u32 {
         unsafe {
             let Ok(root) = CreatePopupMenu() else { return 0 };
 
-            add_item(root, CMD_TOGGLE_3D, "立体效果（3D）", st.style_3d);
+            // Top quick action
+            add_item(
+                root,
+                CMD_TOGGLE_POMODORO,
+                if st.pomodoro { "结束番茄钟" } else { "开始番茄钟" },
+                st.pomodoro,
+            );
+            add_sep(root);
 
-            if let Ok(sub) = CreatePopupMenu() {
-                for (i, c) in COATS.iter().enumerate() {
-                    add_item(sub, CMD_COAT_BASE + i as u32, c.label, st.coat == c.id);
-                }
-                add_sub(root, "毛色", sub);
-            }
-
-            if st.coat == "orange" || st.coat == "grey" {
-                if let Ok(sub) = CreatePopupMenu() {
-                    let striped = st.pattern == "tabby"
-                        || (st.pattern == "auto" && st.coat == "orange");
-                    add_item(sub, CMD_PATTERN_SOLID, "纯色", !striped);
-                    add_item(sub, CMD_PATTERN_TABBY, "虎斑条纹", striped);
-                    add_sub(root, "花纹", sub);
-                }
-            }
-
+            // Group 1: 外观
             if let Ok(look) = CreatePopupMenu() {
+                if let Ok(sub) = CreatePopupMenu() {
+                    for (i, c) in COATS.iter().enumerate() {
+                        add_item(sub, CMD_COAT_BASE + i as u32, c.label, st.coat == c.id);
+                    }
+                    add_sub(look, "毛色", sub);
+                }
+                if st.coat == "orange" || st.coat == "grey" {
+                    if let Ok(sub) = CreatePopupMenu() {
+                        let striped = st.pattern == "tabby"
+                            || (st.pattern == "auto" && st.coat == "orange");
+                        add_item(sub, CMD_PATTERN_SOLID, "纯色", !striped);
+                        add_item(sub, CMD_PATTERN_TABBY, "虎斑条纹", striped);
+                        add_sub(look, "花纹", sub);
+                    }
+                }
+                if let Ok(sub) = CreatePopupMenu() {
+                    for (i, &(label, val)) in SCALE_OPTIONS.iter().enumerate() {
+                        add_item(sub, CMD_SCALE_BASE + i as u32, label, (st.scale - val).abs() < 0.01);
+                    }
+                    add_sub(look, "大小", sub);
+                }
+                add_item(look, CMD_TOGGLE_3D, "立体效果（3D）", st.style_3d);
+                add_sep(look);
                 if let Ok(sub) = CreatePopupMenu() {
                     for (i, &(label, id)) in EYE_OPTIONS.iter().enumerate() {
                         add_item(sub, CMD_EYE_BASE + i as u32, label, st.eye == id);
@@ -219,6 +270,12 @@ mod imp {
                     add_sub(look, "眼睛高光", sub);
                 }
                 if let Ok(sub) = CreatePopupMenu() {
+                    for (i, &(label, id)) in GLOVE_OPTIONS.iter().enumerate() {
+                        add_item(sub, CMD_GLOVE_BASE + i as u32, label, st.gloves == id);
+                    }
+                    add_sub(look, "手套颜色", sub);
+                }
+                if let Ok(sub) = CreatePopupMenu() {
                     for (i, &(label, id)) in COLLAR_OPTIONS.iter().enumerate() {
                         add_item(sub, CMD_COLLAR_BASE + i as u32, label, st.collar == id);
                     }
@@ -226,42 +283,60 @@ mod imp {
                 }
                 add_item(look, CMD_TOGGLE_BLUSH, "腮红", st.blush);
                 add_item(look, CMD_TOGGLE_WHISKERS, "胡须", st.whiskers);
+                add_item(look, CMD_TOGGLE_FESTIVAL, "节日装扮", st.festival);
                 add_sub(root, "外观", look);
             }
 
-            if let Ok(sub) = CreatePopupMenu() {
-                for (i, &(label, val)) in SCALE_OPTIONS.iter().enumerate() {
-                    add_item(sub, CMD_SCALE_BASE + i as u32, label, (st.scale - val).abs() < 0.01);
+            // Group 2: 桌面
+            if let Ok(desk) = CreatePopupMenu() {
+                if let Ok(sub) = CreatePopupMenu() {
+                    for (i, &(label, id)) in KB_COLOR_OPTIONS.iter().enumerate() {
+                        add_item(sub, CMD_KB_COLOR_BASE + i as u32, label, st.keyboard_color == id);
+                    }
+                    add_sub(desk, "键盘颜色", sub);
                 }
-                add_sub(root, "大小", sub);
+                add_item(desk, CMD_TOGGLE_CABLE, "鼠标线", st.mouse_cable);
+                add_item(desk, CMD_TOGGLE_CUP, "桌上的杯子（它会推下去）", st.cup);
+                if let Ok(sub) = CreatePopupMenu() {
+                    for (i, &(label, val)) in OPACITY_OPTIONS.iter().enumerate() {
+                        add_item(sub, CMD_OPACITY_BASE + i as u32, label, (st.opacity - val).abs() < 0.02);
+                    }
+                    add_sub(desk, "透明度", sub);
+                }
+                if let Ok(sub) = CreatePopupMenu() {
+                    add_item(sub, CMD_FPS_AUTO, "自动", st.fps == FpsMode::Auto);
+                    add_item(sub, CMD_FPS_30, "30 fps", st.fps == FpsMode::Fixed(30));
+                    add_item(sub, CMD_FPS_60, "60 fps", st.fps == FpsMode::Fixed(60));
+                    if let Some(hz) = st.high_fps {
+                        add_item(sub, CMD_FPS_HIGH, &format!("{hz} fps"), st.fps == FpsMode::Fixed(hz));
+                    }
+                    add_item(sub, CMD_FPS_UNLIM, "不限制", st.fps == FpsMode::Unlimited);
+                    add_sub(desk, "帧率", sub);
+                }
+                add_sub(root, "桌面", desk);
             }
 
-            if let Ok(sub) = CreatePopupMenu() {
-                add_item(sub, CMD_FPS_AUTO, "自动", st.fps == FpsMode::Auto);
-                add_item(sub, CMD_FPS_30, "30 fps", st.fps == FpsMode::Fixed(30));
-                add_item(sub, CMD_FPS_60, "60 fps", st.fps == FpsMode::Fixed(60));
-                if let Some(hz) = st.high_fps {
-                    add_item(sub, CMD_FPS_HIGH, &format!("{hz} fps"), st.fps == FpsMode::Fixed(hz));
+            // Group 3: 习性
+            if let Ok(habit) = CreatePopupMenu() {
+                if let Ok(sub) = CreatePopupMenu() {
+                    for (i, &(label, val)) in SLEEP_OPTIONS.iter().enumerate() {
+                        add_item(sub, CMD_SLEEP_BASE + i as u32, label, (st.sleep_after - val).abs() < 0.5);
+                    }
+                    add_sub(habit, "多久睡着", sub);
                 }
-                add_item(sub, CMD_FPS_UNLIM, "不限制", st.fps == FpsMode::Unlimited);
-                add_sub(root, "帧率", sub);
+                add_item(habit, CMD_TOGGLE_SOUND, "声音（摸它时呼噜）", st.sound);
+                add_item(habit, CMD_OPEN_SETTINGS, "调节反应…", false);
+                add_sub(root, "习性", habit);
             }
 
-            if let Ok(sub) = CreatePopupMenu() {
-                for (i, &(label, val)) in SLEEP_OPTIONS.iter().enumerate() {
-                    add_item(sub, CMD_SLEEP_BASE + i as u32, label, (st.sleep_after - val).abs() < 0.5);
-                }
-                add_sub(root, "多久睡着", sub);
-            }
-
+            add_sep(root);
             add_item(root, CMD_TOGGLE_PRIVACY, "隐私模式（不显示键名）", st.privacy);
             add_item(root, CMD_TOGGLE_CLICK_THROUGH, "鼠标穿透（点击直接落到下层窗口）", st.click_through);
-            add_item(root, CMD_OPEN_SETTINGS, "调节反应…", false);
+            add_item(root, CMD_HOME, "回到右下角", false);
+            add_item(root, CMD_VISIBILITY, if st.visible { "隐藏" } else { "显示" }, false);
             add_sep(root);
             add_item(root, CMD_TOGGLE_AUTOSTART, "开机自启", st.autostart != Mode::Off);
             add_item(root, CMD_TOGGLE_ADMIN, "以管理员身份运行（游戏里也有按键反馈）", st.run_as_admin);
-            add_item(root, CMD_HOME, "回到右下角", false);
-            add_item(root, CMD_VISIBILITY, if st.visible { "隐藏" } else { "显示" }, false);
             add_sep(root);
             add_note(root, concat!("KeyCat v", env!("CARGO_PKG_VERSION")));
             if !st.hook_ready {

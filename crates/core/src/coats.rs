@@ -175,6 +175,15 @@ pub fn shine_dots(style: &str) -> &'static [[f32; 3]] {
     }
 }
 
+pub fn glove_override(id: &str) -> Option<(&'static str, &'static str)> {
+    match id {
+        "white" => Some(("#f7f6f0", "#b9b7ae")),
+        "black" => Some(("#1d1d1c", "#4a4a46")),
+        "pink" => Some(("#f7c9d3", "#d998a7")),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Look {
     pub style_3d: bool,
@@ -185,6 +194,13 @@ pub struct Look {
     pub blush: bool,
     pub whiskers: bool,
     pub collar: String,
+    pub gloves: String,
+    pub keyboard_color: String,
+    pub mouse_cable: bool,
+    pub opacity: f32,
+    pub cup: bool,
+    pub festival: bool,
+    pub sound: bool,
 }
 
 impl Default for Look {
@@ -198,6 +214,13 @@ impl Default for Look {
             blush: false,
             whiskers: true,
             collar: "none".into(),
+            gloves: "auto".into(),
+            keyboard_color: "cream".into(),
+            mouse_cable: true,
+            opacity: 1.0,
+            cup: true,
+            festival: true,
+            sound: false,
         }
     }
 }
@@ -253,6 +276,7 @@ impl Look {
         let eye_right = hex_color(if eye_key == "odd" { eye_hex("gold") } else { eye_hex(eye_key) });
         let lid_color = c.lid.map(hex_color).unwrap_or(eye_left);
         let collar_col = collar_hex(&self.collar);
+        let (paw_hex, toe_hex) = glove_override(&self.gloves).unwrap_or((c.paw, c.toe));
         ResolvedLook {
             fur,
             light: c.light.map(hex_color).unwrap_or(fur),
@@ -274,8 +298,8 @@ impl Look {
             chin_color: hex_color(c.ink),
             rim_color: hex_color(c.rim),
             arm_rim_color: hex_color(c.arm),
-            paw_color: hex_color(c.paw),
-            toe_color: hex_color(c.toe),
+            paw_color: hex_color(paw_hex),
+            toe_color: hex_color(toe_hex),
             whisker_color: hex_color(c.whisker),
             nose_color: c.nose.map(hex_color).unwrap_or(fur),
             mouth_color: c.mouth.map(hex_color).unwrap_or(fur),

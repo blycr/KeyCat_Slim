@@ -189,6 +189,116 @@ private final class WarmActionButton: NSView {
     }
 }
 
+/// Custom pill button for personality presets with hover, pressed, and active highlight states.
+private final class PresetPillButton: NSView {
+    let title: String
+    var isSelected: Bool = false { didSet { needsDisplay = true } }
+    var onClick: (() -> Void)?
+
+    private let labelField = NSTextField(labelWithString: "")
+    private var isHovered = false
+    private var isPressed = false
+    private var trackingAreaRef: NSTrackingArea?
+
+    override var wantsUpdateLayer: Bool { true }
+
+    init(frame: CGRect, title: String) {
+        self.title = title
+        super.init(frame: frame)
+        wantsLayer = true
+
+        labelField.stringValue = title
+        labelField.alignment = .center
+        labelField.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        labelField.isEditable = false
+        labelField.isSelectable = false
+        labelField.isBezeled = false
+        labelField.drawsBackground = false
+        addSubview(labelField)
+        layoutLabel()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    private func layoutLabel() {
+        let h: CGFloat = 17
+        labelField.frame = CGRect(x: 2, y: (bounds.height - h) * 0.5, width: bounds.width - 4, height: h)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutLabel()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = trackingAreaRef { removeTrackingArea(old) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .cursorUpdate],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingAreaRef = area
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        isPressed = false
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+        isPressed = false
+        if inside {
+            onClick?()
+        }
+        needsDisplay = true
+    }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.cornerRadius = 7
+        layer.borderWidth = 1
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if isSelected {
+                layer.backgroundColor = KeyCatTheme.accent.cgColor
+                layer.borderColor = KeyCatTheme.accent.cgColor
+                labelField.textColor = KeyCatTheme.accentText
+            } else if isPressed {
+                layer.backgroundColor = KeyCatTheme.btnPressed.cgColor
+                layer.borderColor = KeyCatTheme.accent.cgColor
+                labelField.textColor = KeyCatTheme.text
+            } else if isHovered {
+                layer.backgroundColor = KeyCatTheme.btnHover.cgColor
+                layer.borderColor = KeyCatTheme.accent.cgColor
+                labelField.textColor = KeyCatTheme.text
+            } else {
+                layer.backgroundColor = KeyCatTheme.bg.cgColor
+                layer.borderColor = KeyCatTheme.line.cgColor
+                labelField.textColor = KeyCatTheme.text
+            }
+        }
+    }
+}
+
 /// NSWindow subclass that cleanly closes when Escape is pressed.
 private final class EscClosableWindow: NSWindow {
     override func cancelOperation(_ sender: Any?) {
@@ -214,10 +324,18 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         let defVal: Float
     }
 
+    private struct PresetItem {
+        let name: String
+        let hint: String
+    }
+
     weak var app: AppDelegate?
     var window: NSWindow?
 
     private var items: [ParamItem] = []
+    private var presets: [PresetItem] = []
+    private var presetButtons: [PresetPillButton] = []
+    private var presetHintLabel: NSTextField?
     private var toggles: [String: NSSwitch] = [:]
     private var sliders: [String: NSSlider] = [:]
     private var valueLabels: [String: NSTextField] = [:]
@@ -248,6 +366,15 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
                 defVal: m.def_val
             ))
         }
+        let pCount = Int(kc_preset_count())
+        presets.reserveCapacity(pCount)
+        for i in 0..<pCount {
+            let name = kc_preset_name(UInt32(i)).map { String(cString: $0) } ?? ""
+            let hint = kc_preset_hint(UInt32(i)).map { String(cString: $0) } ?? ""
+            if !name.isEmpty {
+                presets.append(PresetItem(name: name, hint: hint))
+            }
+        }
     }
 
     func show() {
@@ -258,11 +385,20 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     }
 
     private func formatValue(_ item: ParamItem, value: Float) -> String {
+        if item.unit == "hour" {
+            let floored = value.rounded(.down)
+            let whole = Int(floored)
+            let h = ((whole % 24) + 24) % 24
+            let m = Int(((value - floored) * 60.0).rounded())
+            return String(format: "%02d:%02d", h, m)
+        }
         let num = item.step < 1.0 ? String(format: "%.1f", value) : "\(Int(value.rounded()))"
         return item.unit.isEmpty ? num : "\(num) \(item.unit)"
     }
 
     private func build() {
+        presetButtons.removeAll()
+        presetHintLabel = nil
         toggles.removeAll()
         sliders.removeAll()
         valueLabels.removeAll()
@@ -285,6 +421,47 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         subtitle.frame = CGRect(x: padX + 4, y: y, width: cardW - 8, height: 18)
         doc.addSubview(subtitle)
         y += 28
+
+        // Personality presets card
+        if !presets.isEmpty {
+            let pHeader = makeLabel("性格预设", size: 12.5, weight: .semibold, color: KeyCatTheme.muted)
+            pHeader.frame = CGRect(x: padX + 4, y: y, width: cardW - 8, height: 20)
+            doc.addSubview(pHeader)
+            y += 24
+
+            let pCardTop = y
+            let pCard = ThemedView(frame: CGRect(x: padX, y: pCardTop, width: cardW, height: 76))
+            pCard.fillColor = KeyCatTheme.card
+            pCard.borderColor = KeyCatTheme.line
+            pCard.borderWidth = 1
+            pCard.cornerRadius = 10
+
+            let pGap: CGFloat = 6
+            let pillCount = CGFloat(presets.count)
+            let pillW = (innerW - pGap * (pillCount - 1)) / pillCount
+            let pillH: CGFloat = 28
+            for (idx, preset) in presets.enumerated() {
+                let px = innerPad + CGFloat(idx) * (pillW + pGap)
+                let pill = PresetPillButton(
+                    frame: CGRect(x: px, y: 12, width: pillW, height: pillH),
+                    title: preset.name
+                )
+                pill.onClick = { [weak self] in
+                    self?.app?.applyPreset(idx)
+                    self?.syncControlsFromScene()
+                }
+                pCard.addSubview(pill)
+                presetButtons.append(pill)
+            }
+
+            let hint = makeLabel("", size: 11.5, weight: .regular, color: KeyCatTheme.muted)
+            hint.frame = CGRect(x: innerPad, y: 48, width: innerW, height: 18)
+            pCard.addSubview(hint)
+            presetHintLabel = hint
+
+            doc.addSubview(pCard)
+            y = pCardTop + 76 + 16
+        }
 
         var groups: [String] = []
         for it in items where !groups.contains(it.group) {
@@ -481,15 +658,44 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
             }
         }
         updateGroupEnabledStates()
+        updatePresetStates()
+    }
+
+    private func updatePresetStates() {
+        guard let app else { return }
+        let matched = app.matchingPreset()
+        for (idx, btn) in presetButtons.enumerated() {
+            btn.isSelected = (idx == matched)
+        }
+        if matched >= 0 && matched < presets.count {
+            presetHintLabel?.stringValue = presets[matched].hint
+        } else {
+            presetHintLabel?.stringValue = "已自定义参数，随时可点上方预设或恢复默认"
+        }
     }
 
     private func updateGroupEnabledStates() {
         guard let app else { return }
         let annoyOn = app.tuningValue(for: "annoyOn") >= 0.5
         let curiousOn = app.tuningValue(for: "curiousOn") >= 0.5
-        let group0 = items.first?.group ?? ""
+        let nightOn = app.tuningValue(for: "nightOn") >= 0.5
+        var groups: [String] = []
+        for it in items where !groups.contains(it.group) {
+            groups.append(it.group)
+        }
+        let group0 = groups.indices.contains(0) ? groups[0] : ""
+        let group1 = groups.indices.contains(1) ? groups[1] : ""
         for it in items where !it.isToggle {
-            let enabled = (it.group == group0) ? annoyOn : curiousOn
+            let enabled: Bool
+            if it.group == group0 {
+                enabled = annoyOn
+            } else if it.group == group1 {
+                enabled = curiousOn
+            } else if it.key == "nightAt" {
+                enabled = nightOn
+            } else {
+                enabled = true
+            }
             sliders[it.key]?.isEnabled = enabled
             sliderRowViews[it.key]?.alphaValue = enabled ? 1.0 : 0.42
         }
@@ -500,6 +706,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         let on = sender.state == .on
         app.setTuningValue(key: key, value: on ? 1.0 : 0.0, isToggle: true)
         updateGroupEnabledStates()
+        updatePresetStates()
     }
 
     @objc private func sliderChanged(_ sender: NSSlider) {
@@ -512,9 +719,12 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         sender.doubleValue = Double(clamped)
         valueLabels[key]?.stringValue = formatValue(item, value: clamped)
         app.setTuningValue(key: key, value: clamped, isToggle: false)
+        updatePresetStates()
     }
 
     func windowWillClose(_ notification: Notification) {
+        presetButtons.removeAll()
+        presetHintLabel = nil
         toggles.removeAll()
         sliders.removeAll()
         valueLabels.removeAll()

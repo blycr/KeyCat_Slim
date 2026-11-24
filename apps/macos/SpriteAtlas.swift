@@ -21,8 +21,14 @@ final class SpriteAtlas {
     }
 
     private func bake(kind: UInt32, label: String) -> MTLTexture? {
-        let wide = kind == UInt32(KC_SPRITE_CAP) && label.count > 1
-        let w = wide ? 256 : 128
+        let w: Int
+        if kind == UInt32(KC_SPRITE_BUBBLE) {
+            w = 512
+        } else if kind == UInt32(KC_SPRITE_CAP) && label.count > 1 {
+            w = 256
+        } else {
+            w = 128
+        }
         let h = 128
         let bytesPerRow = w * 4
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * h)
@@ -58,6 +64,10 @@ final class SpriteAtlas {
                 drawAnger(ctx)
             case UInt32(KC_SPRITE_BANG):
                 drawBang(ctx)
+            case UInt32(KC_SPRITE_HEART):
+                drawHeart(ctx)
+            case UInt32(KC_SPRITE_BUBBLE):
+                drawBubble(ctx, w: CGFloat(w), text: label)
             default:
                 drawDust(ctx)
             }
@@ -202,5 +212,51 @@ final class SpriteAtlas {
         ctx.setStrokeColor(rgba(0xc9, 0xc4, 0xb4, 1.0))
         ctx.setLineWidth(6)
         ctx.strokeEllipse(in: rect)
+    }
+
+    private func drawHeart(_ ctx: CGContext) {
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 64, y: 108))
+        path.addQuadCurve(to: CGPoint(x: 18, y: 44), control: CGPoint(x: 14, y: 74))
+        path.addQuadCurve(to: CGPoint(x: 46, y: 22), control: CGPoint(x: 20, y: 18))
+        path.addQuadCurve(to: CGPoint(x: 64, y: 38), control: CGPoint(x: 58, y: 24))
+        path.addQuadCurve(to: CGPoint(x: 82, y: 22), control: CGPoint(x: 70, y: 24))
+        path.addQuadCurve(to: CGPoint(x: 110, y: 44), control: CGPoint(x: 108, y: 18))
+        path.addQuadCurve(to: CGPoint(x: 64, y: 108), control: CGPoint(x: 114, y: 74))
+        path.closeSubpath()
+
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        ctx.setStrokeColor(rgba(0xfb, 0xfa, 0xf3, 1.0))
+        ctx.setLineWidth(12)
+        ctx.addPath(path)
+        ctx.strokePath()
+
+        ctx.setFillColor(rgba(0xf2, 0x7c, 0x94, 1.0))
+        ctx.addPath(path)
+        ctx.fillPath()
+    }
+
+    private func drawBubble(_ ctx: CGContext, w: CGFloat, text: String) {
+        let shadowRect = CGRect(x: 10, y: 18, width: w - 20, height: 94)
+        let shadowPath = CGPath(roundedRect: shadowRect, cornerWidth: 44, cornerHeight: 44, transform: nil)
+        ctx.setFillColor(rgba(30, 26, 22, 0.32))
+        ctx.addPath(shadowPath)
+        ctx.fillPath()
+
+        let boxRect = CGRect(x: 10, y: 10, width: w - 20, height: 94)
+        let boxPath = CGPath(roundedRect: boxRect, cornerWidth: 44, cornerHeight: 44, transform: nil)
+        ctx.setFillColor(rgba(0xfb, 0xf8, 0xf1, 0.98))
+        ctx.addPath(boxPath)
+        ctx.fillPath()
+
+        ctx.setStrokeColor(rgba(0x3a, 0x32, 0x2b, 1.0))
+        ctx.setLineWidth(5)
+        ctx.addPath(boxPath)
+        ctx.strokePath()
+
+        let font = NSFont.systemFont(ofSize: 36, weight: .bold)
+        let ink = NSColor(srgbRed: 0x23 / 255.0, green: 0x1e / 255.0, blue: 0x1a / 255.0, alpha: 1.0)
+        drawCenteredText(ctx, text: text, font: font, color: ink, rect: CGRect(x: 24, y: 10, width: w - 48, height: 94))
     }
 }

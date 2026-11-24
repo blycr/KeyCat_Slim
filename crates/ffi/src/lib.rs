@@ -3,15 +3,17 @@
 
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
+use keycat_core::audio::PurrSynth;
 use keycat_core::behavior::{HitZone, Scene, SpriteKey};
 use keycat_core::cat::{COLLAR_LIFT, HEAD_R};
 use keycat_core::coats::Look;
 use keycat_core::geometry::{MeshData, Vertex};
 use keycat_core::keyboard::KeyInstance;
+use keycat_core::life::Festival;
 use keycat_core::math::{hex_color, Mat4, Vec3};
-use keycat_core::tuning::{ParamKind, Tuning, TUNING_SCHEMA};
+use keycat_core::tuning::{ParamKind, Tuning, TUNING_PRESETS, TUNING_SCHEMA};
 use serde_json::Value;
 
 pub const KC_HIT_NONE: u32 = 0;
@@ -62,8 +64,15 @@ pub const KC_MESH_MOUSE_WHEEL: u32 = 24;
 pub const KC_MESH_MOUSE_SEAM: u32 = 25;
 pub const KC_MESH_MOUSE_BTN: u32 = 26;
 pub const KC_MESH_WHISKER_0: u32 = 27;
-pub const KC_MESH_EAR_FILL: u32 = 33;
-pub const KC_MESH_EAR_RIM: u32 = 34;
+pub const KC_MESH_CUP_BODY: u32 = 33;
+pub const KC_MESH_CUP_RIM: u32 = 34;
+pub const KC_MESH_CUP_HANDLE: u32 = 35;
+pub const KC_MESH_CUP_COFFEE: u32 = 36;
+pub const KC_MESH_HAT_CONE: u32 = 37;
+pub const KC_MESH_HAT_BRIM: u32 = 38;
+pub const KC_MESH_HAT_RING: u32 = 39;
+pub const KC_MESH_EAR_FILL: u32 = 40;
+pub const KC_MESH_EAR_RIM: u32 = 41;
 
 pub const KC_DYN_CABLE: u32 = 0;
 pub const KC_DYN_TAIL_FILL: u32 = 1;
@@ -72,12 +81,16 @@ pub const KC_DYN_ARM_FILL_0: u32 = 3;
 pub const KC_DYN_ARM_RIM_0: u32 = 4;
 pub const KC_DYN_ARM_FILL_1: u32 = 5;
 pub const KC_DYN_ARM_RIM_1: u32 = 6;
+pub const KC_DYN_STEAM_A: u32 = 7;
+pub const KC_DYN_STEAM_B: u32 = 8;
 
 pub const KC_SPRITE_CAP: u32 = 0;
 pub const KC_SPRITE_SLEEP_Z: u32 = 1;
 pub const KC_SPRITE_ANGER: u32 = 2;
 pub const KC_SPRITE_BANG: u32 = 3;
 pub const KC_SPRITE_DUST: u32 = 4;
+pub const KC_SPRITE_HEART: u32 = 5;
+pub const KC_SPRITE_BUBBLE: u32 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -156,7 +169,9 @@ pub struct KcFrameData {
     pub kb_dirty: u8,
     pub cable_dirty: u8,
     pub cat_dyn_dirty: u8,
+    pub steam_dirty: u8,
     pub is_busy: u8,
+    pub opacity: f32,
     pub draws: *const KcDrawCmd,
     pub draw_count: u32,
     pub sprites: *const KcSpriteCmd,
@@ -183,6 +198,10 @@ pub struct KcScene {
     draws: Vec<KcDrawCmd>,
     sprite_labels: Vec<CString>,
     sprites: Vec<KcSpriteCmd>,
+}
+
+pub struct KcAudio {
+    synth: Mutex<PurrSynth>,
 }
 
 fn mat_flat(m: Mat4) -> [f32; 16] {
@@ -229,6 +248,7 @@ unsafe fn cstr_or<'a>(p: *const c_char, fallback: &'a str) -> &'a str {
 }
 
 impl KcScene {
+    #[allow(clippy::too_many_arguments)]
     fn push_draw(
         &mut self,
         pipeline: u32,
@@ -270,9 +290,11 @@ impl KcScene {
         let kb_dirty = u8::from(self.scene.keyboard.instances_dirty);
         let cable_dirty = u8::from(self.scene.mouse.cable_dirty);
         let cat_dyn_dirty = u8::from(self.scene.cat.dynamic_dirty);
+        let steam_dirty = u8::from(self.scene.cup.steam_dirty);
         self.scene.keyboard.instances_dirty = false;
         self.scene.mouse.cable_dirty = false;
         self.scene.cat.dynamic_dirty = false;
+        self.scene.cup.steam_dirty = false;
 
         let ear_key = self.scene.cat.active_ear().key;
         let frame_cb = KcFrameCB {
@@ -303,7 +325,25 @@ impl KcScene {
         let board_w = self.scene.keyboard.world_matrix();
         let paw_rim_col = hex_color("#8f8f8a");
 
-        // ===== Order -2: mouse outer shell + hind paw rims =====
+        // ===== Order -2: desk cup, mouse outer shell + hind paw rims =====
+        if self.scene.cup.visible() {
+            let cw = self.scene.cup.world_matrix();
+            let hw = self.scene.cup.handle_world();
+            let cfw = self.scene.cup.coffee_world();
+            let alpha = self.scene.cup.opacity;
+            let blend = if alpha < 0.99 { KC_BLEND_PREMUL } else { KC_BLEND_OPAQUE };
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_FRONT, KC_DEPTH_RW, blend, false, KC_MESH_CUP_RIM, cw, view, hex_color("#2a241f"), alpha, [0.0; 4]);
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, blend, false, KC_MESH_CUP_BODY, cw, view, hex_color("#f7f2e7"), alpha, [0.0; 4]);
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, blend, false, KC_MESH_CUP_HANDLE, hw, view, hex_color("#efe7d7"), alpha, [0.0; 4]);
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, blend, false, KC_MESH_CUP_COFFEE, cfw, view, hex_color("#5b3a24"), alpha, [0.0; 4]);
+            if self.scene.cup.steam_opacity_a > 0.01 {
+                self.push_draw(KC_PIPE_BASIC, KC_CULL_NONE, KC_DEPTH_RO, KC_BLEND_PREMUL, true, KC_DYN_STEAM_A, Mat4::IDENTITY, view, hex_color("#fbfaf3"), self.scene.cup.steam_opacity_a, [0.0; 4]);
+            }
+            if self.scene.cup.steam_opacity_b > 0.01 {
+                self.push_draw(KC_PIPE_BASIC, KC_CULL_NONE, KC_DEPTH_RO, KC_BLEND_PREMUL, true, KC_DYN_STEAM_B, Mat4::IDENTITY, view, hex_color("#fbfaf3"), self.scene.cup.steam_opacity_b, [0.0; 4]);
+            }
+        }
+
         self.push_draw(
             KC_PIPE_BASIC, KC_CULL_FRONT, KC_DEPTH_RW, KC_BLEND_OPAQUE,
             false, KC_MESH_MOUSE_DOME,
@@ -366,13 +406,15 @@ impl KcScene {
                 false, KC_MESH_HEAD, chin_m, view, rl.chin_color, 1.0, [3.0, 0.05, 0.0, 0.0],
             );
         }
+        let kb_case_col = self.scene.keyboard.case_color;
+        let kb_plate_col = self.scene.keyboard.plate_color;
         self.push_draw(
             KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE,
-            false, KC_MESH_KB_CASE, board_w, view, hex_color("#252523"), 1.0, [0.0; 4],
+            false, KC_MESH_KB_CASE, board_w, view, kb_case_col, 1.0, [0.0; 4],
         );
         self.push_draw(
             KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE,
-            false, KC_MESH_KB_PLATE, board_w, view, hex_color("#2b2b28"), 1.0, [0.0; 4],
+            false, KC_MESH_KB_PLATE, board_w, view, kb_plate_col, 1.0, [0.0; 4],
         );
         let mouse_dome_w = self.scene.mouse.dome_world();
         if rl.style_3d {
@@ -446,8 +488,17 @@ impl KcScene {
             false, KC_MESH_CAP_END, tail_cap_m, view, [1.0; 3], 1.0, [0.0, 0.0, 0.0, 4.0],
         );
 
-        // ===== Order 0~1: collar + bell & mouse cable =====
-        if rl.collar_visible {
+        // ===== Order 0~1: collar / CNY scarf + mouse cable =====
+        let outfit = self.scene.cat.outfit;
+        let wears_scarf = outfit == Festival::Cny;
+        if wears_scarf {
+            let cw = self.scene.cat.collar_world().mul(Mat4::from_scale(Vec3::new(1.05, 1.45, 1.05)));
+            let ink = hex_color("#7a1d17");
+            let scarf_red = hex_color("#d93829");
+            let lift = [0.0, 0.0, COLLAR_LIFT, 0.0];
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_FRONT, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_COLLAR_RIM, cw, view, ink, 1.0, lift);
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_COLLAR_FILL, cw, view, scarf_red, 1.0, lift);
+        } else if rl.collar_visible {
             let cw = self.scene.cat.collar_world();
             let bh = self.scene.cat.bell_hang_world();
             let r_bell: f32 = 0.064;
@@ -479,10 +530,12 @@ impl KcScene {
             self.push_draw(KC_PIPE_BASIC, KC_CULL_DECAL, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_BELL_GLINT, glint_m, view, hex_color("#fff6d8"), 1.0, lift);
         }
 
-        self.push_draw(
-            KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE,
-            true, KC_DYN_CABLE, Mat4::IDENTITY, view, hex_color("#2a2a27"), 1.0, [0.0; 4],
-        );
+        if self.scene.mouse.cable_visible {
+            self.push_draw(
+                KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE,
+                true, KC_DYN_CABLE, Mat4::IDENTITY, view, hex_color("#2a2a27"), 1.0, [0.0; 4],
+            );
+        }
 
         // ===== Order 2~3: hind paws + toes =====
         for &s in &[-1.0f32, 1.0] {
@@ -505,7 +558,7 @@ impl KcScene {
         self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_MOUSE_SEAM, shape_w, view, hex_color("#2a2a27"), 1.0, [0.0; 4]);
         self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_MOUSE_WHEEL, wheel_w, view, hex_color("#e9a94f"), 1.0, [0.0; 4]);
 
-        // ===== Order 10~12: face overlays =====
+        // ===== Order 10~15: face overlays, yawn, lick, festival hats =====
         let pupil_col = hex_color("#141414");
         let shine_col = [1.0, 1.0, 1.0];
         let blush_col = hex_color("#f08a8a");
@@ -557,6 +610,48 @@ impl KcScene {
             self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_NOSE, nose_w, view, rl.nose_color, 1.0, [0.0; 4]);
             self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_MOUTH, head_w, view, rl.mouth_color, 1.0, [0.0; 4]);
         }
+        if self.scene.cat.yawn_open > 0.03 {
+            let yw = self.scene.cat.yawn_world();
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_DISC, yw, view, hex_color("#4a1b24"), 1.0, [0.0; 4]);
+            let tongue = yw.mul(Mat4::from_trs_euler(Vec3::new(0.0, -0.32, 0.002), Vec3::ZERO, Vec3::new(0.65, 0.48, 1.0)));
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_DISC, tongue, view, hex_color("#f08a9a"), 1.0, [0.0; 4]);
+        }
+        if self.scene.cat.lick_out > 0.03 {
+            let lw = self.scene.cat.lick_world();
+            self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_NONE, KC_BLEND_OPAQUE, false, KC_MESH_DISC, lw, view, hex_color("#f393a3"), 1.0, [0.0; 4]);
+        }
+
+        // Festival hats
+        if matches!(outfit, Festival::Xmas | Festival::Halloween | Festival::Birthday) {
+            let hr = self.scene.cat.hat_root_world();
+            match outfit {
+                Festival::Xmas => {
+                    let cone_m = hr.mul(Mat4::from_scale(Vec3::new(0.28, 0.56, 0.28)));
+                    let ring_m = hr.mul(Mat4::from_scale(Vec3::new(0.27, 0.27, 0.27)));
+                    let pom_m = hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.56, 0.0), Vec3::ZERO, Vec3::splat(1.3)));
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_CONE, cone_m, view, hex_color("#d9483b"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_RING, ring_m, view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_BELL_BALL, pom_m, view, hex_color("#fbf9f3"), 1.0, [0.0; 4]);
+                }
+                Festival::Halloween => {
+                    let brim_m = hr.mul(Mat4::from_scale(Vec3::new(0.45, 0.028, 0.45)));
+                    let cone_m = hr.mul(Mat4::from_scale(Vec3::new(0.22, 0.60, 0.22)));
+                    let band_m = hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.05, 0.0), Vec3::ZERO, Vec3::new(0.21, 0.18, 0.21)));
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_BRIM, brim_m, view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_CONE, cone_m, view, hex_color("#2b2440"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_RING, band_m, view, hex_color("#9a6bd1"), 1.0, [0.0; 4]);
+                }
+                Festival::Birthday => {
+                    let cone_m = hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.54, 0.21)));
+                    let ring_m = hr.mul(Mat4::from_scale(Vec3::new(0.21, 0.16, 0.21)));
+                    let pom_m = hr.mul(Mat4::from_trs_euler(Vec3::new(0.0, 0.54, 0.0), Vec3::ZERO, Vec3::splat(1.15)));
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_CONE, cone_m, view, hex_color("#ee8fb4"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_HAT_RING, ring_m, view, hex_color("#70c4b8"), 1.0, [0.0; 4]);
+                    self.push_draw(KC_PIPE_BASIC, KC_CULL_BACK, KC_DEPTH_RW, KC_BLEND_OPAQUE, false, KC_MESH_BELL_BALL, pom_m, view, hex_color("#f2c94c"), 1.0, [0.0; 4]);
+                }
+                _ => {}
+            }
+        }
 
         // ===== Order 18~23: front paw rims, arm rims/bodies, front paws/toes =====
         for i in 0..2 {
@@ -588,11 +683,10 @@ impl KcScene {
             }
         }
 
-        // ===== Order 40~45: 2D Billboard Sprites =====
-        // Populate labels first so CString backing buffers never move when pushing sprite cmds.
+        // ===== Order 40~48: 2D Billboard Sprites =====
         for sp in &self.scene.sprites {
             let label = match &sp.key {
-                SpriteKey::Cap(s) => s.as_str(),
+                SpriteKey::Cap(s) | SpriteKey::Bubble(s) => s.as_str(),
                 _ => "",
             };
             self.sprite_labels.push(CString::new(label).unwrap_or_default());
@@ -604,6 +698,8 @@ impl KcScene {
                 SpriteKey::Anger => KC_SPRITE_ANGER,
                 SpriteKey::Bang => KC_SPRITE_BANG,
                 SpriteKey::Dust => KC_SPRITE_DUST,
+                SpriteKey::Heart => KC_SPRITE_HEART,
+                SpriteKey::Bubble(_) => KC_SPRITE_BUBBLE,
             };
             self.sprites.push(KcSpriteCmd {
                 kind,
@@ -622,7 +718,9 @@ impl KcScene {
             kb_dirty,
             cable_dirty,
             cat_dyn_dirty,
+            steam_dirty,
             is_busy: u8::from(self.scene.is_busy()),
+            opacity: self.scene.opacity,
             draws: self.draws.as_ptr(),
             draw_count: self.draws.len() as u32,
             sprites: self.sprites.as_ptr(),
@@ -635,7 +733,7 @@ impl KcScene {
 pub extern "C" fn kc_scene_new() -> *mut KcScene {
     Box::into_raw(Box::new(KcScene {
         scene: Scene::new(),
-        draws: Vec::with_capacity(96),
+        draws: Vec::with_capacity(112),
         sprite_labels: Vec::with_capacity(16),
         sprites: Vec::with_capacity(16),
     }))
@@ -710,6 +808,13 @@ pub unsafe extern "C" fn kc_scene_on_pet(s: *mut KcScene, down: u8, x: f32) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn kc_scene_on_double_click(s: *mut KcScene) {
+    if let Some(s) = s.as_mut() {
+        s.scene.on_head_double_click();
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn kc_scene_hit(s: *const KcScene) -> u32 {
     s.as_ref().map(|s| hit_to_u32(s.scene.hit)).unwrap_or(KC_HIT_NONE)
 }
@@ -727,6 +832,40 @@ pub unsafe extern "C" fn kc_scene_set_look(
     whiskers: u8,
 ) {
     if let Some(s) = s.as_mut() {
+        let mut look = s.scene.cat.look.clone();
+        look.style_3d = style_3d != 0;
+        look.coat = cstr_or(coat, "black").to_string();
+        look.pattern = cstr_or(pattern, "auto").to_string();
+        look.eye = cstr_or(eye, "auto").to_string();
+        look.shine = cstr_or(shine, "classic").to_string();
+        look.collar = cstr_or(collar, "none").to_string();
+        look.blush = blush != 0;
+        look.whiskers = whiskers != 0;
+        s.scene.set_look(look);
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn kc_scene_set_look_ext(
+    s: *mut KcScene,
+    style_3d: u8,
+    coat: *const c_char,
+    pattern: *const c_char,
+    eye: *const c_char,
+    shine: *const c_char,
+    collar: *const c_char,
+    blush: u8,
+    whiskers: u8,
+    gloves: *const c_char,
+    keyboard_color: *const c_char,
+    mouse_cable: u8,
+    opacity: f32,
+    cup: u8,
+    festival: u8,
+    sound: u8,
+) {
+    if let Some(s) = s.as_mut() {
         s.scene.set_look(Look {
             style_3d: style_3d != 0,
             coat: cstr_or(coat, "black").to_string(),
@@ -736,6 +875,13 @@ pub unsafe extern "C" fn kc_scene_set_look(
             collar: cstr_or(collar, "none").to_string(),
             blush: blush != 0,
             whiskers: whiskers != 0,
+            gloves: cstr_or(gloves, "auto").to_string(),
+            keyboard_color: cstr_or(keyboard_color, "cream").to_string(),
+            mouse_cable: mouse_cable != 0,
+            opacity,
+            cup: cup != 0,
+            festival: festival != 0,
+            sound: sound != 0,
         });
     }
 }
@@ -744,7 +890,54 @@ pub unsafe extern "C" fn kc_scene_set_look(
 pub unsafe extern "C" fn kc_scene_set_options(s: *mut KcScene, privacy: u8, sleep_after: f32) {
     if let Some(s) = s.as_mut() {
         s.scene.privacy = privacy != 0;
-        s.scene.sleep_after = if sleep_after > 0.0 { sleep_after } else { 1e9 };
+        s.scene.sleep_after = if sleep_after > 0.0 { sleep_after } else { 0.0 };
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_scene_set_clock(
+    s: *mut KcScene,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: f32,
+) {
+    if let Some(s) = s.as_mut() {
+        s.scene.set_local_clock(year, month, day, hour);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_scene_set_pomodoro(s: *mut KcScene, on: u8) {
+    if let Some(s) = s.as_mut() {
+        s.scene.set_pomodoro(on != 0);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_scene_load_memory_json(s: *mut KcScene, json_str: *const c_char) {
+    if let Some(s) = s.as_mut() {
+        let raw = cstr_or(json_str, "");
+        if !raw.is_empty() {
+            s.scene.life.load_json(raw);
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_scene_take_memory_json(s: *mut KcScene, force: u8) -> *mut c_char {
+    let Some(s) = s.as_mut() else { return ptr::null_mut() };
+    let now = s.scene.time;
+    let Some(json) = s.scene.life.take_dirty_json(now, force != 0) else {
+        return ptr::null_mut();
+    };
+    CString::new(json).map(CString::into_raw).unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_string_free(ptr: *mut c_char) {
+    if !ptr.is_null() {
+        drop(CString::from_raw(ptr));
     }
 }
 
@@ -785,6 +978,21 @@ pub unsafe extern "C" fn kc_scene_reset_tuning(s: *mut KcScene) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn kc_scene_apply_preset(s: *mut KcScene, index: u32) {
+    if let Some(s) = s.as_mut() {
+        s.scene.tuning.apply_preset(index as usize);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_scene_matching_preset(s: *const KcScene) -> i32 {
+    s.as_ref()
+        .and_then(|s| s.scene.tuning.matching_preset())
+        .map(|i| i as i32)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn kc_scene_annoy_now(s: *mut KcScene) {
     if let Some(s) = s.as_mut() {
         s.scene.annoy_now();
@@ -804,6 +1012,7 @@ pub unsafe extern "C" fn kc_scene_static_mesh(s: *const KcScene, mesh_id: u32) -
     let c = &s.scene.cat;
     let kb = &s.scene.keyboard;
     let mp = &s.scene.mouse;
+    let cup = &s.scene.cup;
     match mesh_id {
         KC_MESH_BODY => mesh_view(&c.body_geo),
         KC_MESH_HEAD => mesh_view(&c.head_geo),
@@ -835,6 +1044,13 @@ pub unsafe extern "C" fn kc_scene_static_mesh(s: *const KcScene, mesh_id: u32) -
         id if (KC_MESH_WHISKER_0..KC_MESH_WHISKER_0 + 6).contains(&id) => {
             c.whiskers.get((id - KC_MESH_WHISKER_0) as usize).map(mesh_view).unwrap_or_else(empty_mesh_view)
         }
+        KC_MESH_CUP_BODY => mesh_view(&cup.body_geo),
+        KC_MESH_CUP_RIM => mesh_view(&cup.rim_geo),
+        KC_MESH_CUP_HANDLE => mesh_view(&cup.handle_geo),
+        KC_MESH_CUP_COFFEE => mesh_view(&cup.coffee_geo),
+        KC_MESH_HAT_CONE => mesh_view(&c.hat_cone_geo),
+        KC_MESH_HAT_BRIM => mesh_view(&c.hat_brim_geo),
+        KC_MESH_HAT_RING => mesh_view(&c.hat_ring_geo),
         _ => empty_mesh_view(),
     }
 }
@@ -861,6 +1077,8 @@ pub unsafe extern "C" fn kc_scene_dynamic_mesh(s: *const KcScene, dyn_id: u32) -
         KC_DYN_ARM_RIM_0 => mesh_view(&s.scene.cat.arms[0].limb.rim.mesh),
         KC_DYN_ARM_FILL_1 => mesh_view(&s.scene.cat.arms[1].limb.body.mesh),
         KC_DYN_ARM_RIM_1 => mesh_view(&s.scene.cat.arms[1].limb.rim.mesh),
+        KC_DYN_STEAM_A => mesh_view(&s.scene.cup.steam_a.mesh),
+        KC_DYN_STEAM_B => mesh_view(&s.scene.cup.steam_b.mesh),
         _ => empty_mesh_view(),
     }
 }
@@ -969,6 +1187,77 @@ pub extern "C" fn kc_tuning_meta(index: u32) -> KcTuningMeta {
     }
 }
 
+struct PresetStrings {
+    name: CString,
+    hint: CString,
+}
+
+fn preset_cache() -> &'static [PresetStrings] {
+    static CACHE: OnceLock<Vec<PresetStrings>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        TUNING_PRESETS
+            .iter()
+            .map(|p| PresetStrings {
+                name: CString::new(p.name).unwrap_or_default(),
+                hint: CString::new(p.hint).unwrap_or_default(),
+            })
+            .collect()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn kc_preset_count() -> u32 {
+    preset_cache().len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn kc_preset_name(index: u32) -> *const c_char {
+    preset_cache().get(index as usize).map(|p| p.name.as_ptr()).unwrap_or(ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn kc_preset_hint(index: u32) -> *const c_char {
+    preset_cache().get(index as usize).map(|p| p.hint.as_ptr()).unwrap_or(ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn kc_audio_new(sample_rate: u32) -> *mut KcAudio {
+    Box::into_raw(Box::new(KcAudio {
+        synth: Mutex::new(PurrSynth::new(sample_rate)),
+    }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_audio_free(a: *mut KcAudio) {
+    if !a.is_null() {
+        drop(Box::from_raw(a));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_audio_sync_from_scene(a: *mut KcAudio, s: *const KcScene) -> u8 {
+    let (Some(a), Some(s)) = (a.as_ref(), s.as_ref()) else { return 0 };
+    let (enabled, level, breath) = s.scene.purr_audio_state();
+    if let Ok(mut synth) = a.synth.lock() {
+        synth.set_target(enabled, level, breath);
+        return u8::from(synth.is_active());
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kc_audio_fill_f32(a: *mut KcAudio, out: *mut f32, len: u32) {
+    if a.is_null() || out.is_null() || len == 0 {
+        return;
+    }
+    let slice = std::slice::from_raw_parts_mut(out, len as usize);
+    if let Ok(mut synth) = (*a).synth.lock() {
+        synth.fill_f32(slice);
+    } else {
+        slice.fill(0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,18 +1268,23 @@ mod tests {
             let s = kc_scene_new();
             assert!(!s.is_null());
             kc_scene_set_viewport(s, 360.0, 368.0);
+            kc_scene_set_clock(s, 2026, 12, 24, 15.0);
             let coat = CString::new("calico").unwrap();
             let auto = CString::new("auto").unwrap();
             let shine = CString::new("sparkle").unwrap();
             let collar = CString::new("red").unwrap();
-            kc_scene_set_look(s, 1, coat.as_ptr(), auto.as_ptr(), auto.as_ptr(), shine.as_ptr(), collar.as_ptr(), 1, 1);
+            let pink = CString::new("pink").unwrap();
+            kc_scene_set_look_ext(
+                s, 1, coat.as_ptr(), auto.as_ptr(), auto.as_ptr(), shine.as_ptr(), collar.as_ptr(),
+                1, 1, pink.as_ptr(), pink.as_ptr(), 1, 0.85, 1, 1, 1,
+            );
 
-            for id in 0..33u32 {
+            for id in 0..40u32 {
                 let mv = kc_scene_static_mesh(s, id);
                 assert!(!mv.vertices.is_null() && mv.vertex_count > 0, "static mesh {id} empty");
                 assert!(!mv.indices.is_null() && mv.index_count > 0, "static mesh {id} indices empty");
             }
-            for dyn_id in 0..7u32 {
+            for dyn_id in 0..9u32 {
                 let mv = kc_scene_dynamic_mesh(s, dyn_id);
                 assert!(!mv.vertices.is_null() && mv.vertex_count > 0, "dyn mesh {dyn_id} empty");
             }
@@ -1004,20 +1298,24 @@ mod tests {
             assert_eq!(kc_scene_on_cursor(s, 171.0, 240.0), KC_HIT_DRAG);
             assert_eq!(kc_scene_on_cursor(s, 20.0, 20.0), KC_HIT_NONE);
             let frame = kc_scene_prepare_frame(s);
-            assert!(frame.draw_count >= 50, "expected full draw list, got {}", frame.draw_count);
+            assert!(frame.draw_count >= 55, "expected full draw list, got {}", frame.draw_count);
             assert!(frame.sprite_count >= 1, "expected key popup sprite");
+            assert!((frame.opacity - 0.85).abs() < 1e-3);
 
-            let ear_fill = kc_scene_ear_mesh(s, frame.ear_key, 0);
-            let ear_rim = kc_scene_ear_mesh(s, frame.ear_key, 1);
-            assert!(ear_fill.vertex_count > 0 && ear_rim.vertex_count > 0);
+            assert!(kc_tuning_count() >= 20);
+            assert_eq!(kc_preset_count(), 5);
+            kc_scene_apply_preset(s, 2);
+            assert_eq!(kc_scene_matching_preset(s), 2);
 
-            let mut kb_count = 0u32;
-            let kb_ptr = kc_scene_kb_instances(s, 0, &mut kb_count);
-            assert!(!kb_ptr.is_null() && kb_count >= 58, "kb_count={kb_count}");
+            let audio = kc_audio_new(48_000);
+            let _ = kc_audio_sync_from_scene(audio, s);
+            let mut buf = [0.0f32; 128];
+            kc_audio_fill_f32(audio, buf.as_mut_ptr(), 128);
+            kc_audio_free(audio);
 
-            assert!(kc_tuning_count() >= 10);
-            let m0 = kc_tuning_meta(0);
-            assert!(!m0.key.is_null() && !m0.label.is_null());
+            let mem = kc_scene_take_memory_json(s, 1);
+            assert!(!mem.is_null());
+            kc_string_free(mem);
 
             kc_scene_free(s);
         }
