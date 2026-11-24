@@ -66,9 +66,9 @@ mod win_app {
         PostMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetWindowLongW, SetWindowPos,
         ShowWindow, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST, IDC_ARROW, IDC_HAND, MSG,
         MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOSIZE, SW_HIDE,
-        SW_SHOWNOACTIVATE, WM_APP, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONUP, WM_RBUTTONUP,
-        WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        SW_SHOWNOACTIVATE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP,
+        WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     use crate::autostart::{self, Mode};
@@ -82,12 +82,13 @@ mod win_app {
     };
     use crate::store::Store;
     use crate::tray::{
-        self, MenuState, TrayIcon, CMD_COAT_BASE, CMD_COLLAR_BASE, CMD_EYE_BASE, CMD_FPS_30,
-        CMD_FPS_60, CMD_FPS_HIGH, CMD_FPS_UNLIM, CMD_HOME, CMD_OPEN_SETTINGS, CMD_PATTERN_SOLID,
-        CMD_PATTERN_TABBY, CMD_QUIT, CMD_SCALE_BASE, CMD_SHINE_BASE, CMD_SLEEP_BASE,
-        CMD_TOGGLE_3D, CMD_TOGGLE_ADMIN, CMD_TOGGLE_AUTOSTART, CMD_TOGGLE_BLUSH,
-        CMD_TOGGLE_CLICK_THROUGH, CMD_TOGGLE_PRIVACY, CMD_TOGGLE_WHISKERS, CMD_VISIBILITY,
-        COLLAR_OPTIONS, EYE_OPTIONS, SCALE_OPTIONS, SHINE_OPTIONS, SLEEP_OPTIONS, WM_TRAY,
+        self, FpsMode, MenuState, TrayIcon, CMD_COAT_BASE, CMD_COLLAR_BASE, CMD_EYE_BASE,
+        CMD_FPS_30, CMD_FPS_60, CMD_FPS_AUTO, CMD_FPS_HIGH, CMD_FPS_UNLIM, CMD_HOME,
+        CMD_OPEN_SETTINGS, CMD_PATTERN_SOLID, CMD_PATTERN_TABBY, CMD_QUIT, CMD_SCALE_BASE,
+        CMD_SHINE_BASE, CMD_SLEEP_BASE, CMD_TOGGLE_3D, CMD_TOGGLE_ADMIN, CMD_TOGGLE_AUTOSTART,
+        CMD_TOGGLE_BLUSH, CMD_TOGGLE_CLICK_THROUGH, CMD_TOGGLE_PRIVACY, CMD_TOGGLE_WHISKERS,
+        CMD_VISIBILITY, COLLAR_OPTIONS, EYE_OPTIONS, SCALE_OPTIONS, SHINE_OPTIONS, SLEEP_OPTIONS,
+        WM_TRAY,
     };
 
     const IDENTIFIER: &str = "com.ellobok.keycat";
@@ -112,7 +113,8 @@ mod win_app {
         run_as_admin: bool,
         autostart: Mode,
         scale: f64,
-        fps: u32,
+        fps: FpsMode,
+        display_hz: u32,
         hook_ready: bool,
         held: HashSet<u32>,
         petting: bool,
@@ -140,7 +142,7 @@ mod win_app {
         blush: bool,
         whiskers: bool,
         scale: f64,
-        fps: u32,
+        fps: FpsMode,
         high_fps: Option<u32>,
         sleep_after: f64,
         privacy: bool,
@@ -209,11 +211,14 @@ mod win_app {
             .unwrap_or(0.9)
     }
 
-    fn read_fps(store: &Store) -> u32 {
-        match store.get("fps").and_then(Value::as_u64) {
-            Some(0) => 0,
-            Some(v) if (15..=1000).contains(&v) => v as u32,
-            _ => 60,
+    fn read_fps(store: &Store) -> FpsMode {
+        match store.get("fps") {
+            Some(Value::String(s)) if s == "auto" => FpsMode::Auto,
+            Some(v) if v.as_u64() == Some(0) => FpsMode::Unlimited,
+            Some(v) if v.as_u64().is_some_and(|n| (15..=1000).contains(&n)) => {
+                FpsMode::Fixed(v.as_u64().unwrap() as u32)
+            }
+            _ => FpsMode::Auto,
         }
     }
 
@@ -240,11 +245,6 @@ mod win_app {
             .and_then(Value::as_object)
             .map(Tuning::from_json)
             .unwrap_or_default()
-    }
-
-    fn detected_high_fps() -> Option<u32> {
-        let hz = display::max_refresh_hz();
-        (hz > 60).then_some(hz)
     }
 
     fn primary_work_area() -> RECT {
@@ -545,7 +545,8 @@ mod win_app {
             self.scene.on_mouse_button(down);
         }
 
-        fn snapshot_menu(&self) -> OwnedMenuState {
+        fn snapshot_menu(&mut self) -> OwnedMenuState {
+            self.display_hz = display::max_refresh_hz();
             let look = read_look(&self.store);
             let sleep_after = self
                 .store
@@ -563,7 +564,7 @@ mod win_app {
                 whiskers: look.whiskers,
                 scale: self.scale,
                 fps: self.fps,
-                high_fps: detected_high_fps(),
+                high_fps: (self.display_hz > 60).then_some(self.display_hz),
                 sleep_after,
                 privacy: self.scene.privacy,
                 click_through: self.click_through,
@@ -616,6 +617,10 @@ mod win_app {
                 }
                 c if (CMD_SCALE_BASE..CMD_SCALE_BASE + SCALE_OPTIONS.len() as u32).contains(&c) => {
                     self.apply_scale(SCALE_OPTIONS[(c - CMD_SCALE_BASE) as usize].1, true);
+                }
+                CMD_FPS_AUTO => {
+                    self.store.set("fps", json!("auto"));
+                    self.apply_scene_options();
                 }
                 CMD_FPS_30 => {
                     self.store.set("fps", json!(30));
@@ -742,12 +747,17 @@ mod win_app {
         }
 
         fn frame_duration(&self) -> Duration {
-            let hz = if self.fps == 0 {
-                display::max_refresh_hz().max(60)
-            } else if self.scene.is_busy() {
-                self.fps.clamp(15, 240)
-            } else {
-                self.fps.min(30).max(15)
+            let hz = match self.fps {
+                FpsMode::Auto => {
+                    let cap = self.display_hz.min(60).max(15);
+                    if self.scene.is_busy() {
+                        cap
+                    } else {
+                        cap.min(30)
+                    }
+                }
+                FpsMode::Fixed(n) => n.clamp(15, 240),
+                FpsMode::Unlimited => self.display_hz.max(60),
             };
             Duration::from_secs_f64(1.0 / f64::from(hz))
         }
@@ -760,8 +770,8 @@ mod win_app {
             return;
         }
         let snapshot = APP.with(|cell| {
-            let borrow = cell.try_borrow().ok()?;
-            borrow.as_ref().map(App::snapshot_menu)
+            let mut borrow = cell.try_borrow_mut().ok()?;
+            borrow.as_mut().map(App::snapshot_menu)
         });
         let cmd_and_hz = snapshot.map(|owned| {
             let st = owned.as_menu_state();
@@ -831,7 +841,18 @@ mod win_app {
                 APP.with(|cell| {
                     if let Ok(mut borrow) = cell.try_borrow_mut() {
                         if let Some(ref mut app) = *borrow {
+                            app.display_hz = display::max_refresh_hz();
                             app.apply_scale(app.scale, true);
+                        }
+                    }
+                });
+                LRESULT(0)
+            }
+            WM_DISPLAYCHANGE => {
+                APP.with(|cell| {
+                    if let Ok(mut borrow) = cell.try_borrow_mut() {
+                        if let Some(ref mut app) = *borrow {
+                            app.display_hz = display::max_refresh_hz();
                         }
                     }
                 });
@@ -1002,7 +1023,8 @@ mod win_app {
             run_as_admin: false,
             autostart: if cfg!(debug_assertions) { Mode::Off } else { autostart::current() },
             scale,
-            fps: 60,
+            fps: FpsMode::Auto,
+            display_hz: display::max_refresh_hz(),
             hook_ready,
             held: HashSet::new(),
             petting: false,

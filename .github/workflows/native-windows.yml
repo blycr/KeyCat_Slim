@@ -1,0 +1,75 @@
+name: Windows Native
+
+# Builds the zero-WebView2 native Windows version (native/win) and packages it into an NSIS installer.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-windows.yml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-windows.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload KeyCat-Native-Setup.exe to (optional)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Run core tests
+        run: cargo test -p keycat-core
+
+      - name: Build native release binary
+        run: cargo build --release -p keycat-native
+
+      - name: Build NSIS installer
+        run: |
+          mkdir -p out
+          VERSION="$(grep -m1 '^version' win/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          EXE_WIN="$(cygpath -w "$PWD/target/release/KeyCat.exe")"
+          OUT_WIN="$(cygpath -w "$PWD/out/KeyCat-Native-Setup.exe")"
+          makensis -DVERSION="$VERSION" -DEXE_PATH="$EXE_WIN" -DOUT_FILE="$OUT_WIN" win/installer.nsi
+          (cd out && sha256sum KeyCat-Native-Setup.exe | tee KeyCat-Native-Setup.exe.sha256)
+          ls -lh out
+
+      - name: Upload to GitHub Release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --prerelease --title "$TAG" --generate-notes
+          gh release upload "$TAG" \
+            out/KeyCat-Native-Setup.exe \
+            out/KeyCat-Native-Setup.exe.sha256 \
+            --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keycat-native-windows
+          path: native/out/*
+          if-no-files-found: error

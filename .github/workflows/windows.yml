@@ -1,14 +1,27 @@
 name: Windows
 
-# Builds the Tauri shell in win/ on a real Windows runner. Tag pushes also publish the installer
-# plus latest.json, which is what the app's updater reads, and latest.yml, which moves 1.0.x
-# installs (Electron, electron-updater) over to this build.
+# Builds the Tauri NSIS installer in win/ on a Windows runner.
+# Tag pushes (or workflow_dispatch with a tag) upload KeyCat-Windows-Setup.exe (+ .sha256,
+# plus latest.json / latest.yml when TAURI_SIGNING_PRIVATE_KEY is configured).
 on:
   push:
     branches: [main]
+    paths:
+      - 'win/**'
+      - 'web/**'
+      - '.github/workflows/windows.yml'
     tags: ['v*']
   pull_request:
+    paths:
+      - 'win/**'
+      - 'web/**'
+      - '.github/workflows/windows.yml'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload (e.g. v1.1.1); leave empty to build current branch only'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -22,6 +35,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -47,9 +62,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The updater key only exists as a repository secret; without it (pull requests from
-      # forks) the installer is built unsigned, which is fine for checking that it builds.
-      - name: Build installer
+      - name: Build NSIS installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -57,10 +70,6 @@ jobs:
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             npm run dist
           else
-            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-              echo "TAURI_SIGNING_PRIVATE_KEY is required to publish a release" >&2
-              exit 1
-            fi
             npm run dist -- --config '{"bundle":{"createUpdaterArtifacts":false}}'
           fi
 
@@ -69,9 +78,10 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           mkdir -p out
           cp target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe out/KeyCat-Windows-Setup.exe
-          ls -l out
+          (cd out && sha256sum KeyCat-Windows-Setup.exe | tee KeyCat-Windows-Setup.exe.sha256)
+          ls -lh out
           [ -f target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe.sig ] || exit 0
-          url="https://github.com/ElloboDK/KeyCat/releases/download/v$version/KeyCat-Windows-Setup.exe"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version/KeyCat-Windows-Setup.exe"
           date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           VERSION="$version" URL="$url" DATE="$date" \
           SIG="$(cat target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe.sig)" \
@@ -100,13 +110,21 @@ jobs:
           cat out/latest.json out/latest.yml
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" out/KeyCat-Windows-Setup.exe out/latest.json out/latest.yml --clobber
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          [ -n "$TAG" ] || exit 0
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          FILES=(out/KeyCat-Windows-Setup.exe out/KeyCat-Windows-Setup.exe.sha256)
+          [ -f out/latest.json ] && FILES+=(out/latest.json)
+          [ -f out/latest.yml ] && FILES+=(out/latest.yml)
+          gh release upload "$TAG" "${FILES[@]}" --clobber
 
       - uses: actions/upload-artifact@v4
         with:

@@ -104,6 +104,36 @@ struct Host {
     save_gen: Arc<AtomicU64>,
 }
 
+/// Frame-rate setting: Auto (min(60, displayHz) active, auto step-down when idle/asleep),
+/// Fixed(n) (always pinned to n fps), or Unlimited (0).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FpsMode {
+    Auto,
+    Fixed(u32),
+    Unlimited,
+}
+
+impl FpsMode {
+    fn from_store(store: &Store) -> Self {
+        match store.get("fps") {
+            Some(Value::String(s)) if s == "auto" => FpsMode::Auto,
+            Some(v) if v.as_u64() == Some(0) => FpsMode::Unlimited,
+            Some(v) if v.as_u64().is_some_and(|n| (15..=1000).contains(&n)) => {
+                FpsMode::Fixed(v.as_u64().unwrap() as u32)
+            }
+            _ => FpsMode::Auto,
+        }
+    }
+
+    fn to_json(self) -> Value {
+        match self {
+            FpsMode::Auto => json!("auto"),
+            FpsMode::Fixed(n) => json!(n),
+            FpsMode::Unlimited => json!(0),
+        }
+    }
+}
+
 /// Settings with their defaults applied, the same keys and fallbacks as the mac build.
 struct Settings {
     style: String,
@@ -118,8 +148,7 @@ struct Settings {
     click_through: bool,
     run_as_admin: bool,
     sleep_after: f64,
-    /// Target FPS cap: 30, 60, detected high refresh rate, or 0 for unlimited.
-    fps: u32,
+    fps: FpsMode,
     tune: Value,
     scale: f64,
 }
@@ -129,12 +158,8 @@ impl Host {
         self.store.get("catScale").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.3).unwrap_or(0.9)
     }
 
-    fn fps(&self) -> u32 {
-        match self.store.get("fps").and_then(Value::as_u64) {
-            Some(0) => 0,
-            Some(v) if (15..=1000).contains(&v) => v as u32,
-            _ => 60,
-        }
+    fn fps(&self) -> FpsMode {
+        FpsMode::from_store(&self.store)
     }
 
     fn settings(&self) -> Settings {
@@ -169,9 +194,14 @@ fn detected_high_fps() -> Option<u32> {
     (hz > 60).then_some(hz)
 }
 
-fn compute_frame_ms(fps: u32) -> u64 {
-    let target = if fps == 0 { display::max_refresh_hz().max(60) } else { fps.clamp(15, 240) };
-    (1000 / u64::from(target)).clamp(4, 33)
+fn compute_frame_ms(fps: FpsMode) -> u64 {
+    let display_hz = display::max_refresh_hz();
+    let target = match fps {
+        FpsMode::Auto => display_hz.min(60).max(15),
+        FpsMode::Fixed(n) => n.clamp(15, 240),
+        FpsMode::Unlimited => display_hz.max(60).min(240),
+    };
+    (1000 / u64::from(target)).clamp(4, 67)
 }
 
 fn sync_frame_cadence(app: &AppHandle) {
@@ -254,7 +284,8 @@ fn push_options(app: &AppHandle) {
         "collar": s.collar,
         "privacy": s.privacy,
         "sleepAfter": if s.sleep_after > 0.0 { s.sleep_after } else { 1e9 },
-        "fps": s.fps,
+        "fps": s.fps.to_json(),
+        "displayHz": display::max_refresh_hz(),
         "tune": s.tune,
     });
     js(app, &format!("cat.options({options})"));
@@ -919,18 +950,21 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .collect::<tauri::Result<Vec<_>>>()?;
     items.push(submenu(app, "大小", sizes)?);
     let mut fps_opts: Vec<(String, Value)> = vec![
+        ("自动".into(), json!("auto")),
         ("30 fps".into(), json!(30)),
         ("60 fps".into(), json!(60)),
     ];
     if let Some(high_hz) = detected_high_fps() {
         fps_opts.push((format!("{high_hz} fps"), json!(high_hz)));
     }
-    if s.fps > 60 && !fps_opts.iter().any(|(_, v)| v.as_u64() == Some(u64::from(s.fps))) {
-        fps_opts.push((format!("{} fps", s.fps), json!(s.fps)));
+    if let FpsMode::Fixed(n) = s.fps {
+        if n > 60 && !fps_opts.iter().any(|(_, v)| v.as_u64() == Some(u64::from(n))) {
+            fps_opts.push((format!("{n} fps"), json!(n)));
+        }
     }
     fps_opts.push(("不限制".into(), json!(0)));
     let fps_refs: Vec<(&str, Value)> = fps_opts.iter().map(|(l, v)| (l.as_str(), v.clone())).collect();
-    items.push(submenu(app, "帧率", choice(app, "fps", &json!(s.fps), &fps_refs)?)?);
+    items.push(submenu(app, "帧率", choice(app, "fps", &s.fps.to_json(), &fps_refs)?)?);
     items.push(submenu(
         app,
         "多久睡着",
@@ -1315,11 +1349,7 @@ fn setup(app: &AppHandle) -> tauri::Result<()> {
     let dir = app.path().app_data_dir()?;
     let _ = DATA_DIR.set(dir.clone());
     let store = Store::open(dir.join("settings.json"));
-    let initial_fps = match store.get("fps").and_then(Value::as_u64) {
-        Some(0) => 0,
-        Some(v) if (15..=1000).contains(&v) => v as u32,
-        _ => 60,
-    };
+    let initial_fps = FpsMode::from_store(&store);
     app.manage(Mutex::new(Host {
         store,
         page_ready: false,

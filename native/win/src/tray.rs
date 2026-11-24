@@ -30,6 +30,7 @@ mod imp {
     pub const CMD_TOGGLE_BLUSH: u32 = 1360;
     pub const CMD_TOGGLE_WHISKERS: u32 = 1361;
     pub const CMD_SCALE_BASE: u32 = 1400;
+    pub const CMD_FPS_AUTO: u32 = 1449;
     pub const CMD_FPS_30: u32 = 1450;
     pub const CMD_FPS_60: u32 = 1451;
     pub const CMD_FPS_HIGH: u32 = 1452;
@@ -83,6 +84,13 @@ mod imp {
         ("不睡", 0.0),
     ];
 
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum FpsMode {
+        Auto,
+        Fixed(u32),
+        Unlimited,
+    }
+
     pub struct MenuState<'a> {
         pub style_3d: bool,
         pub coat: &'a str,
@@ -93,7 +101,7 @@ mod imp {
         pub blush: bool,
         pub whiskers: bool,
         pub scale: f64,
-        pub fps: u32,
+        pub fps: FpsMode,
         pub high_fps: Option<u32>,
         pub sleep_after: f64,
         pub privacy: bool,
@@ -229,12 +237,13 @@ mod imp {
             }
 
             if let Ok(sub) = CreatePopupMenu() {
-                add_item(sub, CMD_FPS_30, "30 fps", st.fps == 30);
-                add_item(sub, CMD_FPS_60, "60 fps", st.fps == 60);
+                add_item(sub, CMD_FPS_AUTO, "自动", st.fps == FpsMode::Auto);
+                add_item(sub, CMD_FPS_30, "30 fps", st.fps == FpsMode::Fixed(30));
+                add_item(sub, CMD_FPS_60, "60 fps", st.fps == FpsMode::Fixed(60));
                 if let Some(hz) = st.high_fps {
-                    add_item(sub, CMD_FPS_HIGH, &format!("{hz} fps"), st.fps == hz);
+                    add_item(sub, CMD_FPS_HIGH, &format!("{hz} fps"), st.fps == FpsMode::Fixed(hz));
                 }
-                add_item(sub, CMD_FPS_UNLIM, "不限制", st.fps == 0);
+                add_item(sub, CMD_FPS_UNLIM, "不限制", st.fps == FpsMode::Unlimited);
                 add_sub(root, "帧率", sub);
             }
 

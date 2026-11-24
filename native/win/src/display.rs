@@ -36,7 +36,7 @@ mod imp {
                 .as_bool()
                 {
                     let hz = mode.dmDisplayFrequency;
-                    if (30..=1000).contains(&hz) {
+                    if (15..=1000).contains(&hz) {
                         max_hz = max_hz.max(hz);
                     }
                 }
@@ -46,13 +46,13 @@ mod imp {
                 mode.dmSize = mem::size_of::<DEVMODEW>() as u16;
                 if EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut mode).as_bool() {
                     let hz = mode.dmDisplayFrequency;
-                    if (30..=1000).contains(&hz) {
+                    if (15..=1000).contains(&hz) {
                         max_hz = hz;
                     }
                 }
             }
         }
-        if max_hz >= 30 { max_hz } else { 60 }
+        if max_hz >= 15 { max_hz } else { 60 }
     }
 }
 

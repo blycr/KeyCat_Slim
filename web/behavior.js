@@ -8,7 +8,7 @@
   const now = () => frozen ?? performance.now() / 1000;
 
   const { Spring } = K;
-  const opts = { privacy: false, sleepAfter: 60, fps: 60 };
+  const opts = { privacy: false, sleepAfter: 60, fps: 'auto', displayHz: 60 };
   const S = {
     lastInput: now(), lastKey: -100, lastMouse: -100, mouseDown: false,
     cursor: null, cursorSeen: -100, petting: false, petUntil: 0, petX: 0,
@@ -544,8 +544,8 @@
       if (age > 2.6) { releaseSprite(z.sprite); zs.splice(i, 1); }
     }
 
-    // Keep active frame rate for interactive/transient animations; steady sleep Zs run smoothly
-    // at the idle/sleep cadence (min(fps, 30)) instead of forcing full frame rate overnight.
+    // Keep active frame rate for interactive/transient animations; in Auto mode, steady idle/sleep
+    // (including floating Zs) steps down to min(autoCap, 30) automatically.
     if (pet || popups.length || effects.length || cross > 0.02 || (S.sleep > 0.02 && S.sleep < 0.98) || t - S.wakeAt < 0.7) {
       S.busyUntil = Math.max(S.busyUntil, t + 0.5);
     }
@@ -568,14 +568,23 @@
   // at or below the target FPS, and never leave empty rAF callbacks that Chromium can suspend.
   let rafPeriod = 1 / 60, lastRafAt = 0, timerThrottled = false;
 
+  // Auto mode defaults to 60 fps (or displayHz if below 60) when active and drops to <= 30 fps
+  // when idle/asleep. Fixed tiers stay pinned to their chosen FPS; 0 means unlimited.
+  function targetFps(t) {
+    if (opts.fps === 'auto') {
+      const cap = Math.min(60, opts.displayHz >= 15 ? opts.displayHz : 60);
+      return t < S.busyUntil ? cap : Math.min(cap, 30);
+    }
+    return opts.fps;
+  }
+
   function scheduleNext(frameStart) {
     if (paused || rafId || timerId) return;
-    const limit = opts.fps;
-    if (limit <= 0) {
+    const target = targetFps(frameStart);
+    if (target <= 0) {
       rafId = requestAnimationFrame(loop);
       return;
     }
-    const target = frameStart < S.busyUntil ? limit : Math.min(limit, 30);
     const interval = 1 / target;
     if (interval <= rafPeriod * 1.15 || timerThrottled) {
       rafId = requestAnimationFrame(loop);
@@ -612,9 +621,9 @@
       return;
     }
     const t = now();
-    if (timerThrottled && opts.fps > 0) {
-      const target = t < S.busyUntil ? opts.fps : Math.min(opts.fps, 30);
-      if (t - last < (1 / target) * 0.92) {
+    if (timerThrottled) {
+      const target = targetFps(t);
+      if (target > 0 && t - last < (1 / target) * 0.92) {
         rafId = requestAnimationFrame(loop);
         return;
       }
@@ -705,7 +714,12 @@
     },
     options(o) {
       Object.assign(opts, o);
-      if (typeof opts.fps !== 'number' || !Number.isFinite(opts.fps) || opts.fps < 0) opts.fps = 60;
+      if (opts.fps !== 'auto' && (typeof opts.fps !== 'number' || !Number.isFinite(opts.fps) || opts.fps < 0)) {
+        opts.fps = 'auto';
+      }
+      if (typeof opts.displayHz !== 'number' || !Number.isFinite(opts.displayHz) || opts.displayHz < 15) {
+        opts.displayHz = 60;
+      }
       // `tune` holds only the settings that differ from the defaults, so start from those.
       if (o.tune) {
         for (const g of TUNING_SCHEMA) for (const it of g.items) TUNING[it.key] = it.key in o.tune ? o.tune[it.key] : it.def;

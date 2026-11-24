@@ -86,30 +86,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         get { defaults.object(forKey: "sleepAfter") as? Int ?? 60 }
         set { defaults.set(newValue, forKey: "sleepAfter") }
     }
-    /// Target FPS cap: 30, 60 (default), detected high refresh rate, or 0 for unlimited.
-    var fps: Int {
-        get {
-            guard let v = defaults.object(forKey: "fps") as? Int else { return 60 }
-            return (v == 0 || (15...1000).contains(v)) ? v : 60
+    /// Frame-rate mode: "auto" (default: min(60, displayHz) active, auto step-down when idle/asleep),
+    /// fixed integer (30 / 60 / high refresh, never throttles down), or 0 for unlimited.
+    enum FpsMode: Equatable {
+        case auto
+        case fixed(Int)
+        case unlimited
+
+        var jsonValue: Any {
+            switch self {
+            case .auto: return "auto"
+            case .fixed(let n): return n
+            case .unlimited: return 0
+            }
         }
-        set { defaults.set(newValue, forKey: "fps") }
+    }
+
+    var fps: FpsMode {
+        get {
+            if let s = defaults.string(forKey: "fps"), s == "auto" { return .auto }
+            if let n = defaults.object(forKey: "fps") as? Int {
+                if n == 0 { return .unlimited }
+                if (15...1000).contains(n) { return .fixed(n) }
+            }
+            return .auto
+        }
+        set {
+            switch newValue {
+            case .auto: defaults.set("auto", forKey: "fps")
+            case .fixed(let n): defaults.set(n, forKey: "fps")
+            case .unlimited: defaults.set(0, forKey: "fps")
+            }
+        }
     }
     var debugStatusEnabled: Bool {
         ProcessInfo.processInfo.environment["KEYCAT_DEBUG_STATUS"] != nil
     }
+    /// Highest native refresh rate among connected displays (falling back to 60).
+    func displayMaxFPS() -> Int {
+        let hz = NSScreen.screens.map(\.maximumFramesPerSecond).max() ?? 60
+        return (15...1000).contains(hz) ? hz : 60
+    }
     /// Highest native refresh rate (> 60 Hz) among connected displays, if any.
     func detectedHighFPS() -> Int? {
-        let maxHz = NSScreen.screens.map(\.maximumFramesPerSecond).max() ?? 60
+        let maxHz = displayMaxFPS()
         return maxHz > 60 ? maxHz : nil
     }
     private func pointerTickInterval() -> TimeInterval {
+        let displayHz = displayMaxFPS()
         let target: Int
-        if fps == 0 {
-            target = max(detectedHighFPS() ?? 60, 60)
-        } else {
-            target = min(max(fps, 15), 240)
+        switch fps {
+        case .auto: target = min(60, max(15, displayHz))
+        case .fixed(let n): target = min(max(n, 15), 240)
+        case .unlimited: target = min(max(displayHz, 60), 240)
         }
-        return 1.0 / Double(min(target, 240))
+        return 1.0 / Double(target)
     }
 
     func startPointerTimer() {
@@ -257,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         let options: [String: Any] = ["style": style, "coat": coat, "pattern": pattern, "eye": eyeColor, "shine": eyeShine, "blush": blush,
                                       "whiskers": whiskers, "collar": collar,
                                       "privacy": privacy, "sleepAfter": sleepAfter > 0 ? sleepAfter : 1e9,
-                                      "fps": fps, "tune": tune]
+                                      "fps": fps.jsonValue, "displayHz": displayMaxFPS(), "tune": tune]
         guard let data = try? JSONSerialization.data(withJSONObject: options),
               let json = String(data: data, encoding: .utf8) else { return }
         js("cat.options(\(json))")

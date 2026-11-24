@@ -71,14 +71,14 @@ extension AppDelegate {
         menu.addItem(looks)
         menu.addItem(submenu("大小", [("特小", 0.5), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)] as [(String, CGFloat)],
                              selected: scale) { $0.applyScale($1, keepOrigin: true) })
-        var fpsOptions: [(String, Int)] = [("30 fps", 30), ("60 fps", 60)]
+        var fpsOptions: [(String, FpsMode)] = [("自动", .auto), ("30 fps", .fixed(30)), ("60 fps", .fixed(60))]
         if let highHz = detectedHighFPS() {
-            fpsOptions.append(("\(highHz) fps", highHz))
+            fpsOptions.append(("\(highHz) fps", .fixed(highHz)))
         }
-        if fps > 60 && !fpsOptions.contains(where: { $0.1 == fps }) {
-            fpsOptions.append(("\(fps) fps", fps))
+        if case .fixed(let n) = fps, n > 60, !fpsOptions.contains(where: { $0.1 == .fixed(n) }) {
+            fpsOptions.append(("\(n) fps", .fixed(n)))
         }
-        fpsOptions.append(("不限制", 0))
+        fpsOptions.append(("不限制", .unlimited))
         menu.addItem(submenu("帧率", fpsOptions, selected: fps) {
             $0.fps = $1
             $0.startPointerTimer()

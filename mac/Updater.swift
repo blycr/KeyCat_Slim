@@ -32,7 +32,7 @@ final class Updater {
     /// `KEYCAT_UPDATE_URL=<manifest>` checks somewhere else and lifts the Applications-folder rule; for testing.
     static let testManifest = ProcessInfo.processInfo.environment["KEYCAT_UPDATE_URL"].flatMap(URL.init(string:))
     let manifestURL = testManifest
-        ?? URL(string: "https://github.com/ElloboDK/KeyCat/releases/latest/download/latest-mac.json")!
+        ?? URL(string: "https://github.com/blycr/KeyCat_Slim/releases/latest/download/latest-mac.json")!
     let bundle = Bundle.main.bundleURL
     let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     weak var app: AppDelegate?
