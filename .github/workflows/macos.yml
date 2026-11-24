@@ -4,13 +4,6 @@ name: macOS
 # runs FFI + offscreen Metal smoke tests, and uploads KeyCat-macOS.zip on tag pushes.
 on:
   push:
-    branches: [main]
-    paths:
-      - 'native/core/**'
-      - 'native/ffi/**'
-      - 'native/mac/**'
-      - 'native/Cargo.*'
-      - '.github/workflows/macos.yml'
     tags: ['v*']
   pull_request:
     paths:

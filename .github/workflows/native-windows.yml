@@ -4,10 +4,6 @@ name: Windows Native
 # KeyCat-Windows-Setup.exe via NSIS. Tag pushes upload the installer directly to the Release.
 on:
   push:
-    branches: [main]
-    paths:
-      - 'native/**'
-      - '.github/workflows/native-windows.yml'
     tags: ['v*']
   pull_request:
     paths:
