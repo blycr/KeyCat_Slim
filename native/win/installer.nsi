@@ -1,4 +1,4 @@
-; NSIS per-user installer for KeyCat Native (Windows, zero WebView2).
+﻿; NSIS per-user installer for KeyCat Native (Windows, zero WebView2).
 ; Build: makensis /DVERSION=2.0.0 /DEXE_PATH=..\target\release\KeyCat.exe /DOUT_FILE=..\..\dist\KeyCat-Native-Setup.exe installer.nsi
 
 Unicode true

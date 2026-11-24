@@ -59,7 +59,7 @@ jobs:
           VERSION="$(grep -m1 '^version' win/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           EXE_WIN="$(cygpath -w "$PWD/target/release/KeyCat.exe")"
           OUT_WIN="$(cygpath -w "$PWD/out/KeyCat-Native-Setup.exe")"
-          "$MAKENSIS" -DVERSION="$VERSION" -DEXE_PATH="$EXE_WIN" -DOUT_FILE="$OUT_WIN" win/installer.nsi
+          "$MAKENSIS" -INPUTCHARSET UTF8 -DVERSION="$VERSION" -DEXE_PATH="$EXE_WIN" -DOUT_FILE="$OUT_WIN" win/installer.nsi
           (cd out && sha256sum KeyCat-Native-Setup.exe | tee KeyCat-Native-Setup.exe.sha256)
           ls -lh out
 
