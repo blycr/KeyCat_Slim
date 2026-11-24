@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 pub struct Store {
     file: PathBuf,
     data: Map<String, Value>,
+    dirty: bool,
 }
 
 impl Store {
@@ -19,7 +20,7 @@ impl Store {
             .ok()
             .and_then(|text| serde_json::from_str::<Map<String, Value>>(&text).ok())
             .unwrap_or_default();
-        Self { file, data }
+        Self { file, data, dirty: false }
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -28,11 +29,26 @@ impl Store {
 
     pub fn set(&mut self, key: &str, value: Value) {
         self.data.insert(key.to_string(), value);
+        self.dirty = false;
         self.save();
+    }
+
+    /// Updates in memory without blocking the UI thread on fsync; pair with a debounced flush.
+    pub fn set_deferred(&mut self, key: &str, value: Value) {
+        self.data.insert(key.to_string(), value);
+        self.dirty = true;
+    }
+
+    pub fn flush_if_dirty(&mut self) {
+        if self.dirty {
+            self.dirty = false;
+            self.save();
+        }
     }
 
     pub fn remove(&mut self, key: &str) {
         self.data.remove(key);
+        self.dirty = false;
         self.save();
     }
 

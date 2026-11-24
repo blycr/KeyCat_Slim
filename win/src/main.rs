@@ -5,6 +5,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod display;
 mod elevate;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod hook;
@@ -16,7 +18,7 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -29,7 +31,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, RunEvent, Webview, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, Wry,
+    WebviewWindowBuilder, WindowEvent, Wry,
 };
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -94,6 +96,12 @@ struct Host {
     page_answered: bool,
     /// The cat window could not be made, or its page never answered (see watch_page).
     page_failed: bool,
+    /// Shared with the pump thread so hidden windows sleep at 0 Hz.
+    panel_visible: Arc<AtomicBool>,
+    /// Target pointer-sync cadence in ms (tracks the chosen FPS tier).
+    frame_ms: Arc<AtomicU64>,
+    /// Debounce generation counter for settings slider writes.
+    save_gen: Arc<AtomicU64>,
 }
 
 /// Settings with their defaults applied, the same keys and fallbacks as the mac build.
@@ -110,6 +118,8 @@ struct Settings {
     click_through: bool,
     run_as_admin: bool,
     sleep_after: f64,
+    /// Target FPS cap: 30, 60, detected high refresh rate, or 0 for unlimited.
+    fps: u32,
     tune: Value,
     scale: f64,
 }
@@ -117,6 +127,14 @@ struct Settings {
 impl Host {
     fn scale(&self) -> f64 {
         self.store.get("catScale").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.3).unwrap_or(0.9)
+    }
+
+    fn fps(&self) -> u32 {
+        match self.store.get("fps").and_then(Value::as_u64) {
+            Some(0) => 0,
+            Some(v) if (15..=1000).contains(&v) => v as u32,
+            _ => 60,
+        }
     }
 
     fn settings(&self) -> Settings {
@@ -137,11 +155,32 @@ impl Host {
             click_through: self.store.get("clickThrough") == Some(&Value::Bool(true)),
             run_as_admin: self.store.get("runAsAdmin") == Some(&Value::Bool(true)),
             sleep_after: number("sleepAfter").unwrap_or(60.0),
+            fps: self.fps(),
             tune: self.store.get("tune").filter(|v| v.is_object()).cloned().unwrap_or_else(|| json!({})),
             scale: self.scale(),
             coat,
         }
     }
+}
+
+/// Native high refresh rate (> 60 Hz) supported by the user's connected displays, if any.
+fn detected_high_fps() -> Option<u32> {
+    let hz = display::max_refresh_hz();
+    (hz > 60).then_some(hz)
+}
+
+fn compute_frame_ms(fps: u32) -> u64 {
+    let target = if fps == 0 { display::max_refresh_hz().max(60) } else { fps.clamp(15, 240) };
+    (1000 / u64::from(target)).clamp(4, 33)
+}
+
+fn sync_frame_cadence(app: &AppHandle) {
+    let h = host(app);
+    h.frame_ms.store(compute_frame_ms(h.fps()), Ordering::Relaxed);
+}
+
+fn debug_status_enabled() -> bool {
+    DEV || std::env::var_os("KEYCAT_DEBUG_STATUS").is_some()
 }
 
 fn host(app: &AppHandle) -> MutexGuard<'_, Host> {
@@ -215,22 +254,50 @@ fn push_options(app: &AppHandle) {
         "collar": s.collar,
         "privacy": s.privacy,
         "sleepAfter": if s.sleep_after > 0.0 { s.sleep_after } else { 1e9 },
+        "fps": s.fps,
         "tune": s.tune,
     });
     js(app, &format!("cat.options({options})"));
 }
 
 fn on_page_ready(app: &AppHandle) {
-    let first = {
+    let (first, visible) = {
         let mut h = host(app);
         let first = !h.page_ready;
         h.page_ready = true;
-        first
+        (first, h.panel_visible.load(Ordering::Acquire))
     };
     log("page loaded");
     push_options(app);
-    if first {
+    // Lightweight handshake so watch_page knows scripts are alive without polling every 15 s.
+    js(app, "window.webkit.messageHandlers.cat.postMessage({ ready: true })");
+    if !visible {
+        js(app, "cat.setPaused(true)");
+    }
+    if first && debug_status_enabled() {
         start_status_reports(app);
+    }
+}
+
+fn set_panel_visible(app: &AppHandle, visible: bool) {
+    let Some(panel) = panel(app) else { return };
+    if visible {
+        host(app).panel_visible.store(true, Ordering::Release);
+        let _ = panel.show();
+        js(app, "cat.setPaused(false)");
+        update_click_target(app);
+    } else {
+        {
+            let mut h = host(app);
+            h.panel_visible.store(false, Ordering::Release);
+            h.hit = "none".into();
+            h.petting = false;
+            h.drag = None;
+            h.pending_delta = (0.0, 0.0);
+        }
+        js(app, "cat.setPaused(true)");
+        let _ = panel.set_ignore_cursor_events(true);
+        let _ = panel.hide();
     }
 }
 
@@ -316,7 +383,17 @@ fn create_panel(app: &AppHandle) -> tauri::Result<()> {
     let origin = saved_origin(app).unwrap_or_else(|| default_origin(app, size));
     panel.set_position(origin)?;
     panel.set_ignore_cursor_events(true)?;
+    let app_for_event = app.clone();
+    panel.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) {
+            if let Some(win) = crate::panel(&app_for_event) {
+                let factor = win.scale_factor().unwrap_or(1.0);
+                keep_size(&app_for_event, &win, factor);
+            }
+        }
+    });
     panel.show()?;
+    host(app).panel_visible.store(true, Ordering::Release);
     log("panel created");
     watch_page(app);
     Ok(())
@@ -347,8 +424,11 @@ fn watch_page(app: &AppHandle) {
 
 fn tick(app: &AppHandle) {
     let Some(panel) = panel(app) else { return };
-    if !host(app).page_ready {
-        return;
+    {
+        let h = host(app);
+        if !h.page_ready || !h.panel_visible.load(Ordering::Acquire) {
+            return;
+        }
     }
     let Ok(pointer) = app.cursor_position() else { return };
     let dragged = host(app).drag.as_mut().map(|drag| {
@@ -370,7 +450,9 @@ fn tick(app: &AppHandle) {
     };
     // The page works in CSS pixels; the pointer and the window are in physical pixels.
     let factor = panel.scale_factor().unwrap_or(1.0);
-    keep_size(app, &panel, factor);
+    if dragged.is_some() {
+        keep_size(app, &panel, factor);
+    }
     let cursor = (
         ((pointer.x - f64::from(origin.0)) / factor).round() as i32,
         ((pointer.y - f64::from(origin.1)) / factor).round() as i32,
@@ -378,9 +460,7 @@ fn tick(app: &AppHandle) {
     let mut calls = Vec::new();
     {
         let mut h = host(app);
-        // The hook reports no pointer moves, so the movement is the pointer's change between
-        // frames, in CSS pixels like the mac build's event deltas. It drives the mouse paw and
-        // the pointer speed that makes the cat curious.
+        // Movement between ticks in CSS pixels drives the mouse paw and curious pointer speed.
         if let Some(last) = h.last_pointer.replace((pointer.x, pointer.y)) {
             h.pending_delta.0 += (pointer.x - last.0) / factor;
             h.pending_delta.1 += (pointer.y - last.1) / factor;
@@ -426,17 +506,23 @@ fn keep_size(app: &AppHandle, panel: &WebviewWindow, factor: f64) {
     let _ = panel.set_size(want);
 }
 
-/// Feeds hook input and a ~60 fps tick to the main thread, where all the state lives. A tick is
-/// skipped while the previous one is still queued (a menu is open, say) rather than piling up.
+/// Event-driven input & pointer pump:
+/// - Sleeps at 0 Hz when the pointer is idle or the window is hidden.
+/// - While the pointer is moving or dragging, syncs cursor/delta at the selected FPS cadence.
 fn start_pump(app: &AppHandle) {
-    let (sink, inputs) = mpsc::channel::<Input>();
-    match hook::start(sink.clone()) {
+    let (sink, inputs) = mpsc::sync_channel::<Input>(256);
+    let pointer_dirty = Arc::new(AtomicBool::new(false));
+    match hook::start(sink.clone(), pointer_dirty.clone()) {
         Ok(()) => {
             host(app).hook_ready = true;
             log("global input hook started");
         }
         Err(error) => log(&format!("global input hook failed: {error}")),
     }
+    let (panel_visible, frame_ms) = {
+        let h = host(app);
+        (h.panel_visible.clone(), h.frame_ms.clone())
+    };
     let app = app.clone();
     let queued = Arc::new(AtomicBool::new(false));
     thread::Builder::new()
@@ -444,22 +530,71 @@ fn start_pump(app: &AppHandle) {
         .spawn(move || {
             // Holding a sender keeps the channel open even if the hook never started.
             let _sink = sink;
-            let frame = Duration::from_millis(16);
-            let mut next = Instant::now() + frame;
+            let mut active_until: Option<Instant> = None;
+            let mut next_tick = Instant::now();
+            let dispatch_tick = |app: &AppHandle, queued: &Arc<AtomicBool>| {
+                if !queued.swap(true, Ordering::AcqRel) {
+                    let (app2, queued2) = (app.clone(), queued.clone());
+                    let _ = app.run_on_main_thread(move || {
+                        queued2.store(false, Ordering::Release);
+                        tick(&app2);
+                    });
+                }
+            };
             loop {
-                match inputs.recv_timeout(next.saturating_duration_since(Instant::now())) {
+                let visible = panel_visible.load(Ordering::Acquire);
+                let now = Instant::now();
+                if !visible {
+                    active_until = None;
+                }
+                let event = match active_until {
+                    Some(until) if now < until => {
+                        let wait = next_tick.saturating_duration_since(now).min(until.saturating_duration_since(now));
+                        inputs.recv_timeout(wait)
+                    }
+                    _ => {
+                        active_until = None;
+                        inputs.recv().map_err(|_| RecvTimeoutError::Disconnected)
+                    }
+                };
+                match event {
+                    Ok(Input::PointerWake) => {
+                        pointer_dirty.store(false, Ordering::Release);
+                        if panel_visible.load(Ordering::Acquire) {
+                            let now = Instant::now();
+                            let frame = Duration::from_millis(frame_ms.load(Ordering::Relaxed));
+                            active_until = Some(now + Duration::from_millis(200));
+                            if now >= next_tick {
+                                next_tick = now + frame;
+                                dispatch_tick(&app, &queued);
+                            }
+                        }
+                    }
                     Ok(input) => {
+                        let wakes_pointer = matches!(input, Input::Wheel(_) | Input::Button { .. });
                         let app2 = app.clone();
                         let _ = app.run_on_main_thread(move || on_input(&app2, input));
+                        if wakes_pointer && panel_visible.load(Ordering::Acquire) {
+                            let now = Instant::now();
+                            let frame = Duration::from_millis(frame_ms.load(Ordering::Relaxed));
+                            active_until = Some(now + Duration::from_millis(200));
+                            if now >= next_tick {
+                                next_tick = now + frame;
+                                dispatch_tick(&app, &queued);
+                            }
+                        }
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        next = Instant::now() + frame;
-                        if !queued.swap(true, Ordering::AcqRel) {
-                            let (app2, queued) = (app.clone(), queued.clone());
-                            let _ = app.run_on_main_thread(move || {
-                                queued.store(false, Ordering::Release);
-                                tick(&app2);
-                            });
+                        let now = Instant::now();
+                        if pointer_dirty.swap(false, Ordering::AcqRel) && panel_visible.load(Ordering::Acquire) {
+                            active_until = Some(now + Duration::from_millis(200));
+                        }
+                        if panel_visible.load(Ordering::Acquire) {
+                            let frame = Duration::from_millis(frame_ms.load(Ordering::Relaxed));
+                            next_tick = now + frame;
+                            dispatch_tick(&app, &queued);
+                        } else {
+                            active_until = None;
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -473,6 +608,9 @@ fn start_pump(app: &AppHandle) {
 
 fn pointer_in_panel(app: &AppHandle) -> Option<(WebviewWindow, (f64, f64))> {
     let panel = panel(app)?;
+    if !panel.is_visible().unwrap_or(false) {
+        return None;
+    }
     let pointer = app.cursor_position().ok()?;
     let (pos, size) = (panel.outer_position().ok()?, panel.outer_size().ok()?);
     let inside = pointer.x >= f64::from(pos.x)
@@ -485,7 +623,7 @@ fn pointer_in_panel(app: &AppHandle) -> Option<(WebviewWindow, (f64, f64))> {
 fn on_input(app: &AppHandle, input: Input) {
     match input {
         Input::Key { id, code, down } => {
-            {
+            let visible = {
                 let mut h = host(app);
                 // Autorepeat: one paw press per physical press.
                 if down && !h.held.insert(id) {
@@ -495,18 +633,30 @@ fn on_input(app: &AppHandle, input: Input) {
                     h.held.remove(&id);
                 }
                 h.key_events += 1;
-            }
-            if let Some(code) = code {
-                js(app, &format!("cat.key('{code}',{down})"));
+                h.panel_visible.load(Ordering::Acquire)
+            };
+            if visible {
+                if let Some(code) = code {
+                    js(app, &format!("cat.key('{code}',{down})"));
+                }
             }
         }
         Input::Button { button, down } => on_button(app, button, down),
         // Feed the wheel like a vertical mouse move, as the mac build does.
-        Input::Wheel(notches) => host(app).pending_delta.1 += -notches * 0.4,
+        Input::Wheel(notches) => {
+            let mut h = host(app);
+            if h.panel_visible.load(Ordering::Acquire) {
+                h.pending_delta.1 += -notches * 0.4;
+            }
+        }
+        Input::PointerWake => {}
     }
 }
 
 fn on_button(app: &AppHandle, button: Button, down: bool) {
+    if !host(app).panel_visible.load(Ordering::Acquire) {
+        return;
+    }
     if down {
         let (hit, click_through) = {
             let h = host(app);
@@ -574,10 +724,12 @@ fn update_click_target(app: &AppHandle) {
         if h.drag.is_some() {
             return;
         }
-        h.hit == "none" || h.settings().click_through
+        !h.panel_visible.load(Ordering::Acquire) || h.hit == "none" || h.settings().click_through
     };
     if let Some(panel) = panel(app) {
         let _ = panel.set_ignore_cursor_events(ignore);
+        let factor = panel.scale_factor().unwrap_or(1.0);
+        keep_size(app, &panel, factor);
     }
 }
 
@@ -610,6 +762,18 @@ fn on_cat_message(app: &AppHandle, message: &Value) {
     }
 }
 
+fn schedule_debounced_save(app: &AppHandle) {
+    let save_gen = host(app).save_gen.clone();
+    let token = save_gen.fetch_add(1, Ordering::AcqRel) + 1;
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        if save_gen.load(Ordering::Acquire) == token {
+            host(&app).store.flush_if_dirty();
+        }
+    });
+}
+
 fn on_settings_message(app: &AppHandle, body: &Value) {
     if let Some(tune) = body.get("tune").and_then(Value::as_object) {
         {
@@ -618,9 +782,11 @@ fn on_settings_message(app: &AppHandle, body: &Value) {
             if let Some(saved) = merged.as_object_mut() {
                 saved.extend(tune.clone());
             }
-            h.store.set("tune", merged);
+            // Keep slider dragging smooth: update in memory and push live, debounce disk fsync.
+            h.store.set_deferred("tune", merged);
         }
         push_options(app);
+        schedule_debounced_save(app);
     } else if body.get("reset").and_then(Value::as_bool) == Some(true) {
         host(app).store.set("tune", json!({}));
         push_options(app);
@@ -752,6 +918,19 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .map(|(text, value)| check(app, format!("scale:{value}"), text, s.scale == *value))
         .collect::<tauri::Result<Vec<_>>>()?;
     items.push(submenu(app, "大小", sizes)?);
+    let mut fps_opts: Vec<(String, Value)> = vec![
+        ("30 fps".into(), json!(30)),
+        ("60 fps".into(), json!(60)),
+    ];
+    if let Some(high_hz) = detected_high_fps() {
+        fps_opts.push((format!("{high_hz} fps"), json!(high_hz)));
+    }
+    if s.fps > 60 && !fps_opts.iter().any(|(_, v)| v.as_u64() == Some(u64::from(s.fps))) {
+        fps_opts.push((format!("{} fps", s.fps), json!(s.fps)));
+    }
+    fps_opts.push(("不限制".into(), json!(0)));
+    let fps_refs: Vec<(&str, Value)> = fps_opts.iter().map(|(l, v)| (l.as_str(), v.clone())).collect();
+    items.push(submenu(app, "帧率", choice(app, "fps", &json!(s.fps), &fps_refs)?)?);
     items.push(submenu(
         app,
         "多久睡着",
@@ -821,6 +1000,9 @@ fn on_menu(app: &AppHandle, id: &str) {
     if let Some((key, raw)) = id.strip_prefix("set:").and_then(|rest| rest.split_once('=')) {
         if let Ok(value) = serde_json::from_str::<Value>(raw) {
             host(app).store.set(key, value);
+            if key == "fps" {
+                sync_frame_cadence(app);
+            }
             push_options(app);
             update_click_target(app);
         }
@@ -844,15 +1026,17 @@ fn on_menu(app: &AppHandle, id: &str) {
                 apply_scale(app, scale, false);
             }
             "visibility" => {
-                if let Some(panel) = panel(app) {
-                    let _ = if panel.is_visible().unwrap_or(false) { panel.hide() } else { panel.show() };
-                }
+                let visible = panel(app).and_then(|panel| panel.is_visible().ok()).unwrap_or(false);
+                set_panel_visible(app, !visible);
             }
             "update:check" => {
                 tauri::async_runtime::spawn(check_for_updates(app.clone(), true));
             }
             "update:install" => install_update(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                host(app).store.flush_if_dirty();
+                app.exit(0);
+            }
             _ => {}
         }
     }
@@ -1130,8 +1314,14 @@ fn start_update_checks(app: &AppHandle) {
 fn setup(app: &AppHandle) -> tauri::Result<()> {
     let dir = app.path().app_data_dir()?;
     let _ = DATA_DIR.set(dir.clone());
+    let store = Store::open(dir.join("settings.json"));
+    let initial_fps = match store.get("fps").and_then(Value::as_u64) {
+        Some(0) => 0,
+        Some(v) if (15..=1000).contains(&v) => v as u32,
+        _ => 60,
+    };
     app.manage(Mutex::new(Host {
-        store: Store::open(dir.join("settings.json")),
+        store,
         page_ready: false,
         hook_ready: false,
         hit: "none".into(),
@@ -1148,6 +1338,9 @@ fn setup(app: &AppHandle) -> tauri::Result<()> {
         downloaded: None,
         page_answered: false,
         page_failed: false,
+        panel_visible: Arc::new(AtomicBool::new(true)),
+        frame_ms: Arc::new(AtomicU64::new(compute_frame_ms(initial_fps))),
+        save_gen: Arc::new(AtomicU64::new(0)),
     }));
     // Without its window KeyCat still starts, so the tray menu can say what went wrong.
     if let Err(error) = create_panel(app) {
@@ -1174,9 +1367,7 @@ fn main() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(panel) = panel(app) {
-                let _ = panel.show();
-            }
+            set_panel_visible(app, true);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![host_message])
@@ -1184,10 +1375,16 @@ fn main() {
         .setup(|app| Ok(setup(app.handle())?))
         .build(tauri::generate_context!())
         .expect("failed to start KeyCat")
-        .run(|_app, event| {
-            // The app lives in the tray; closing the settings window must not quit it.
-            if let RunEvent::ExitRequested { api, code: None, .. } = event {
-                api.prevent_exit();
+        .run(|app, event| {
+            match event {
+                // The app lives in the tray; closing the settings window must not quit it.
+                RunEvent::ExitRequested { api, code: None, .. } => {
+                    api.prevent_exit();
+                }
+                RunEvent::Exit => {
+                    host(app).store.flush_if_dirty();
+                }
+                _ => {}
             }
         });
 }

@@ -42,6 +42,12 @@ final class WebCatView: WKWebView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        cancelInteractions()
+        app?.refreshCursor()
+    }
+
+    /// Safely clears any in-progress pet or drag (e.g. on mouseUp, panel hide, or interrupted click).
+    func cancelInteractions() {
         if petting {
             petting = false
             app?.pet(down: false, x: 0)
@@ -51,7 +57,6 @@ final class WebCatView: WKWebView {
             app?.dragging = false
             app?.saveOrigin()
         }
-        app?.refreshCursor()
     }
 
     override func rightMouseDown(with event: NSEvent) { app?.showMenu(event) }

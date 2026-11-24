@@ -28,7 +28,7 @@
     Backquote: 'Escape', Delete: 'Backspace', Fn: 'ControlLeft', ControlRight: 'MetaRight',
     AltRight: 'MetaRight', IntlBackslash: 'ShiftLeft', NumpadEnter: 'Enter', ContextMenu: 'MetaRight',
   };
-  for (let i = 1; i <= 12; i++) ALIAS['F' + i] = 'Digit' + (i === 10 ? 0 : i === 11 ? 'Minus' : i === 12 ? 'Equal' : i);
+  for (let i = 1; i <= 10; i++) ALIAS['F' + i] = 'Digit' + (i === 10 ? 0 : i);
   ALIAS.F11 = 'Minus'; ALIAS.F12 = 'Equal';
   for (let i = 0; i <= 9; i++) ALIAS['Numpad' + i] = 'Digit' + i;
   Object.assign(ALIAS, { NumpadAdd: 'Equal', NumpadSubtract: 'Minus', NumpadMultiply: 'Digit8', NumpadDivide: 'Slash', NumpadDecimal: 'Period', NumpadEqual: 'Equal' });
@@ -64,18 +64,44 @@
   board.add(caseRim, caseMesh, plate);
 
   // A keycap is a 4-sided frustum turned 45°, scaled to the key width: sloped sides, flat top.
-  const capGeo = new THREE.CylinderGeometry(Math.SQRT1_2 * 0.8, Math.SQRT1_2, 1, 4, 1);
-  capGeo.rotateY(Math.PI / 4);
-  capGeo.translate(0, 0.5, 0);
-  const sideMat = K.flat('#e6e3d8'), modSide = K.flat('#cbc7ba'), orangeSide = K.flat('#d39a4e');
+  // Split into 3 single-material InstancedMeshes (sides, tops, row notches) so all 61 keys render in 3 draw calls.
+  const sideGeo = new THREE.CylinderGeometry(Math.SQRT1_2 * 0.8, Math.SQRT1_2, 1, 4, 1, true);
+  sideGeo.rotateY(Math.PI / 4);
+  sideGeo.translate(0, 0.5, 0);
+  const topGeo = new THREE.PlaneGeometry(0.8, 0.8);
+  topGeo.rotateX(-Math.PI / 2);
+  topGeo.translate(0, 1, 0);
   // A short dark notch at the near edge of each cap, like the gap between rows seen from above.
   const dotGeo = new THREE.PlaneGeometry(0.014, 0.02);
   dotGeo.rotateX(-Math.PI / 2);
   const dotMat = K.flat('#2a2a27');
   const CAP_H = 0.058;
   const COLORS = { base: new THREE.Color('#f8f7ef'), mod: new THREE.Color('#e0ddd2'), orange: new THREE.Color('#e9b064') };
+  const SIDE_COLORS = { base: new THREE.Color('#e6e3d8'), mod: new THREE.Color('#cbc7ba'), orange: new THREE.Color('#d39a4e') };
   const HIT = new THREE.Color('#b9d84f');
+  const keyCount = ROWS.reduce((sum, row) => sum + row.length, 0);
+  const sideInst = new THREE.InstancedMesh(sideGeo, K.flat('#ffffff'), keyCount);
+  const topInst = new THREE.InstancedMesh(topGeo, K.flat('#ffffff'), keyCount);
+  const dotInst = new THREE.InstancedMesh(dotGeo, dotMat, keyCount);
+  sideInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  topInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  dotInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  board.add(sideInst, topInst, dotInst);
+
   const keys = new Map();
+  const activeKeys = new Set();
+  const _mat = new THREE.Matrix4();
+  const _col = new THREE.Color();
+  function writeKeyTransform(k) {
+    const y = H + 0.01 - k.depth;
+    _mat.makeScale(k.sx, CAP_H, CAP);
+    _mat.setPosition(k.x, y, k.z);
+    sideInst.setMatrixAt(k.idx, _mat);
+    topInst.setMatrixAt(k.idx, _mat);
+    _mat.makeTranslation(k.x, y + CAP_H + 0.001, k.z - CAP * 0.36);
+    dotInst.setMatrixAt(k.idx, _mat);
+  }
+  let idx = 0;
   ROWS.forEach((row, r) => {
     let u = 0;
     for (const [code, width, label, kind = 'base'] of row) {
@@ -83,19 +109,29 @@
       u += width;
       // user space → world: mirrored left/right, number row towards the camera.
       const x = (7.5 - cx) * U, z = (r - 2) * -U;
-      const top = new THREE.MeshBasicMaterial({ color: COLORS[kind].clone() });
-      const side = kind === 'mod' ? modSide : kind === 'orange' ? orangeSide : sideMat;
-      const cap = new THREE.Mesh(capGeo, [side, top, K.flat('#1f1f1d')]);
-      cap.scale.set(width * U - (U - CAP), CAP_H, CAP);
-      const holder = new THREE.Group();
-      holder.position.set(x, H + 0.01, z);
-      const dot = new THREE.Mesh(dotGeo, dotMat);
-      dot.position.set(0, CAP_H + 0.001, -CAP * 0.36);
-      holder.add(cap, dot);
-      board.add(holder);
-      keys.set(code, { code, label, holder, top, base: COLORS[kind], x, z, down: false, glow: 0, depth: 0 });
+      const sx = width * U - (U - CAP);
+      let isDown = false;
+      const entry = {
+        idx, code, label, base: COLORS[kind], x, z, sx, glow: 0, depth: 0,
+        get down() { return isDown; },
+        set down(v) {
+          const next = !!v;
+          if (isDown !== next) { isDown = next; activeKeys.add(entry); }
+        },
+      };
+      writeKeyTransform(entry);
+      sideInst.setColorAt(idx, SIDE_COLORS[kind]);
+      topInst.setColorAt(idx, COLORS[kind]);
+      keys.set(code, entry);
+      idx++;
     }
   });
+  sideInst.instanceMatrix.needsUpdate = true;
+  topInst.instanceMatrix.needsUpdate = true;
+  dotInst.instanceMatrix.needsUpdate = true;
+  sideInst.instanceColor.needsUpdate = true;
+  topInst.instanceColor.needsUpdate = true;
+  topInst.instanceColor.setUsage(THREE.DynamicDrawUsage);
 
   const world = new THREE.Vector3();
   K.keyboard = {
@@ -110,13 +146,24 @@
       return out.set(key.x, H + 0.01 + CAP_H - key.depth, key.z).applyMatrix4(board.matrixWorld);
     },
     update(dt) {
-      for (const key of keys.values()) {
+      if (activeKeys.size === 0) return;
+      for (const key of activeKeys) {
         const depthTarget = key.down ? 0.032 : 0;
         key.depth += (depthTarget - key.depth) * K.approach(key.down ? 60 : 24, dt);
         key.glow += ((key.down ? 1 : 0) - key.glow) * K.approach(key.down ? 40 : 5, dt);
-        key.holder.position.y = H + 0.01 - key.depth;
-        key.top.color.copy(key.base).lerp(HIT, key.glow);
+        if (!key.down && key.depth < 1e-4 && key.glow < 1e-4) {
+          key.depth = 0;
+          key.glow = 0;
+          activeKeys.delete(key);
+        }
+        writeKeyTransform(key);
+        _col.copy(key.base).lerp(HIT, key.glow);
+        topInst.setColorAt(key.idx, _col);
       }
+      sideInst.instanceMatrix.needsUpdate = true;
+      topInst.instanceMatrix.needsUpdate = true;
+      dotInst.instanceMatrix.needsUpdate = true;
+      topInst.instanceColor.needsUpdate = true;
     },
   };
 
@@ -179,6 +226,8 @@
   const cable = new K.TaperTube(24, 6, K.flat('#2a2a27'), 1);
   K.scene.add(cable.mesh);
   const cableStart = V(0, 0, 0), cableEnd = V(-1.6, 0.02, 1.7), cableMid = V(0, 0, 0);
+  const lastCableStart = V(0, 0, 0);
+  let cableInit = false;
   const faceTop = V(0, 0, 0);
   K.mouseProp = {
     group: mouse,
@@ -200,13 +249,18 @@
       // A click squashes the mouse a touch under the paw.
       shape.scale.set(1 + 0.03 * this.pressed, 1 - 0.1 * this.pressed, 1);
       // The cable hangs from the front of the mouse and sags on its way off the desk.
+      // Rebuild only when the attachment point actually moved.
       mouse.updateMatrixWorld();
       cableStart.set(0, MH * 0.25, ML * 0.98).applyMatrix4(shape.matrixWorld);
-      cableMid.set((cableStart.x + cableEnd.x) / 2 + 0.1, 0.02, (cableStart.z + cableEnd.z) / 2 + 0.12);
-      cable.update((t, o) => o.set(
-        (1 - t) ** 2 * cableStart.x + 2 * (1 - t) * t * cableMid.x + t * t * cableEnd.x,
-        (1 - t) ** 2 * cableStart.y + 2 * (1 - t) * t * cableMid.y + t * t * cableEnd.y,
-        (1 - t) ** 2 * cableStart.z + 2 * (1 - t) * t * cableMid.z + t * t * cableEnd.z), () => 0.011);
+      if (!cableInit || cableStart.distanceToSquared(lastCableStart) > 1e-10) {
+        cableInit = true;
+        lastCableStart.copy(cableStart);
+        cableMid.set((cableStart.x + cableEnd.x) / 2 + 0.1, 0.02, (cableStart.z + cableEnd.z) / 2 + 0.12);
+        cable.update((t, o) => o.set(
+          (1 - t) ** 2 * cableStart.x + 2 * (1 - t) * t * cableMid.x + t * t * cableEnd.x,
+          (1 - t) ** 2 * cableStart.y + 2 * (1 - t) * t * cableMid.y + t * t * cableEnd.y,
+          (1 - t) ** 2 * cableStart.z + 2 * (1 - t) * t * cableMid.z + t * t * cableEnd.z), () => 0.011);
+      }
     },
     setStyle(style) {
       const flat = style !== '3d';

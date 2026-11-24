@@ -71,6 +71,18 @@ extension AppDelegate {
         menu.addItem(looks)
         menu.addItem(submenu("大小", [("特小", 0.5), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)] as [(String, CGFloat)],
                              selected: scale) { $0.applyScale($1, keepOrigin: true) })
+        var fpsOptions: [(String, Int)] = [("30 fps", 30), ("60 fps", 60)]
+        if let highHz = detectedHighFPS() {
+            fpsOptions.append(("\(highHz) fps", highHz))
+        }
+        if fps > 60 && !fpsOptions.contains(where: { $0.1 == fps }) {
+            fpsOptions.append(("\(fps) fps", fps))
+        }
+        fpsOptions.append(("不限制", 0))
+        menu.addItem(submenu("帧率", fpsOptions, selected: fps) {
+            $0.fps = $1
+            $0.startPointerTimer()
+        })
         menu.addItem(submenu("多久睡着", [("30 秒", 30), ("1 分钟", 60), ("3 分钟", 180), ("10 分钟", 600), ("不睡", 0)],
                              selected: sleepAfter) { $0.sleepAfter = $1 })
         menu.addItem(toggle("隐私模式（不显示键名）", privacy) { $0.privacy.toggle() })
@@ -152,7 +164,7 @@ extension AppDelegate {
     }
 
     func toggleVisible() {
-        if panel.isVisible { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+        setPanelVisible(!panel.isVisible)
     }
 
     func openPrivacy() {

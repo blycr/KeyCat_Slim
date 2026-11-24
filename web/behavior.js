@@ -8,7 +8,7 @@
   const now = () => frozen ?? performance.now() / 1000;
 
   const { Spring } = K;
-  const opts = { privacy: false, sleepAfter: 60 };
+  const opts = { privacy: false, sleepAfter: 60, fps: 60 };
   const S = {
     lastInput: now(), lastKey: -100, lastMouse: -100, mouseDown: false,
     cursor: null, cursorSeen: -100, petting: false, petUntil: 0, petX: 0,
@@ -54,7 +54,35 @@
   // (`landAt`), and the tail hovers there a while in case more spaces follow before curling back.
   const tailTap = { key: null, t0: -100, dur: 0.18, from: 0, down: false, landAt: -100, reach: 0, hover: 0.12, tip: V() };
   const popups = [], zs = [];
-  const tmp = V(0, 0, 0), tmp2 = V(0, 0, 0);
+  const tmp = V(0, 0, 0), tmp2 = V(0, 0, 0), tmp3 = V(0, 0, 0);
+  const headScr = V(0, 0, 0), focusScr = V(0, 0, 0), eyeScr = V(0, 0, 0), slamTip = V(0, 0, 0);
+  let capsTimer = 0;
+
+  // Sprite pool: reuses Sprite + SpriteMaterial across key popups, sleep Zs and slam effects,
+  // avoiding per-event GPU material allocations and leaks.
+  const spritePool = [];
+  const MAX_SPRITE_POOL = 24;
+  function acquireSprite(map, order) {
+    let sprite = spritePool.pop();
+    if (sprite) {
+      sprite.material.map = map;
+      sprite.material.opacity = 1;
+      sprite.material.needsUpdate = true;
+    } else {
+      sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map, depthTest: false, transparent: true }));
+    }
+    sprite.renderOrder = order;
+    return sprite;
+  }
+  function releaseSprite(sprite) {
+    scene.remove(sprite);
+    if (spritePool.length < MAX_SPRITE_POOL) {
+      sprite.material.map = null;
+      spritePool.push(sprite);
+    } else {
+      sprite.material.dispose();
+    }
+  }
 
   // Adds irritation; it only starts to fade a couple of seconds after the last poke. Switched off
   // in the settings, nothing irritates the cat (the 试试 button still forces it).
@@ -72,6 +100,7 @@
     S.busyUntil = t + 3;
     S.act = null;
     S.nextAct = t + 4 + Math.random() * 4;
+    wakeFrame();
   }
 
   function mousing(t) { return S.mouseDown || t - S.lastMouse < 1.4; }
@@ -118,27 +147,26 @@
     P.squash.kick(0.35);
     P.pitch.kick(0.9);
     // Modifier taps (caps lock / fn) send no key-up; let them spring back.
-    if (code === 'CapsLock') setTimeout(() => key(code, false), 120);
+    if (code === 'CapsLock') {
+      clearTimeout(capsTimer);
+      capsTimer = setTimeout(() => { capsTimer = 0; key(code, false); }, 120);
+    }
     // F keys have no caps of their own and press the digit below; the label still names the F key.
     if (!opts.privacy) popup(k, t, paw.side, /^F\d+$/.test(code) ? code : k.label);
   }
 
-  const fxSprite = (kind, order) => {
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: K.fxTexture(kind), depthTest: false, transparent: true }));
-    sprite.renderOrder = order;
-    return sprite;
-  };
-  const angerMark = fxSprite('anger', 45);
+  const angerMark = new THREE.Sprite(new THREE.SpriteMaterial({ map: K.fxTexture('anger'), depthTest: false, transparent: true }));
+  angerMark.renderOrder = 45;
   angerMark.visible = false;
   scene.add(angerMark);
 
   // The tail lands: a burst and puffs of dust where it hits, the desk jumps, the body flinches.
   function slam(t) {
     S.lastSlam = t;
-    const tip = cat.tailTip(V());
+    const tip = cat.tailTip(slamTip);
     tip.y = 0.08;
     const add = (kind, size, life, vel, order) => {
-      const sprite = fxSprite(kind, order);
+      const sprite = acquireSprite(K.fxTexture(kind), order);
       sprite.position.copy(tip);
       scene.add(sprite);
       effects.push({ kind, sprite, t0: t, life, size, from: tip.clone(), vel });
@@ -151,12 +179,15 @@
 
   // The label floats beside the striking arm, on its outer side, like the reference.
   function popup(k, t, side, label = k.label) {
-    for (let i = popups.length - 1; i >= 0; i--) if (popups[i].key === k) { scene.remove(popups[i].sprite); popups.splice(i, 1); }
+    for (let i = popups.length - 1; i >= 0; i--) if (popups[i].key === k) { releaseSprite(popups[i].sprite); popups.splice(i, 1); }
     const { tex, aspect } = K.labelTexture(label);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
-    sprite.renderOrder = 40;
-    keyboard.keyTop(k, sprite.position).add(V(side * 0.3, 0.2, -0.1));
-    sprite.userData.base = sprite.position.clone();
+    const sprite = acquireSprite(tex, 40);
+    keyboard.keyTop(k, sprite.position);
+    sprite.position.x += side * 0.3;
+    sprite.position.y += 0.2;
+    sprite.position.z -= 0.1;
+    if (sprite.userData.base) sprite.userData.base.copy(sprite.position);
+    else sprite.userData.base = sprite.position.clone();
     sprite.userData.aspect = aspect;
     scene.add(sprite);
     popups.push({ key: k, sprite, t0: t, upAt: null });
@@ -195,8 +226,8 @@
     const strikeAge = t - paw.t0;
     if (k && (paw.down || strikeAge < paw.dur + 0.06)) {
       const top = keyboard.keyTop(k, tmp2);
-      const hover = tmp.copy(top).add(V(0, 0.12, 0));
-      const press = top.clone().add(V(0, 0.07, 0));
+      const hover = tmp.set(top.x, top.y + 0.12, top.z);
+      const press = tmp3.set(top.x, top.y + 0.07, top.z);
       if (strikeAge < paw.dur) {
         // Lift first, then come down onto the key: the arc peaks early.
         const u = smooth(0, 1, strikeAge / paw.dur);
@@ -220,7 +251,8 @@
       damping = 0.9;
     } else if (k && t - paw.t0 < 0.45) {
       // Hovers over the key it just hit, ready for the next one.
-      target = keyboard.keyTop(k, tmp).add(V(0, 0.13, 0));
+      target = keyboard.keyTop(k, tmp);
+      target.y += 0.13;
       hz = 5;
     } else if (t - S.lastKey < 1.2) {
       // While typing, the free paw curls up against the side of the belly.
@@ -341,12 +373,12 @@
     cat.placeHead();
 
     // Gaze target: the key being pressed, else the pointer; the eyes get there first.
-    const headScreen = screen(cat.head.getWorldPosition(tmp2), V());
+    const headScreen = screen(cat.head.getWorldPosition(tmp2), headScr);
     let focus = null;
     const typing = Object.values(paws).find(p => p.key && p.down);
-    if (typing && t - S.lastKey < 0.6) focus = screen(keyboard.keyTop(typing.key, tmp2), V());
-    else if (tailTap.key && t - tailTap.t0 < 0.6) focus = screen(tailTap.tip, V());
-    else if (S.cursor) focus = V(S.cursor.x, S.cursor.y, 0);
+    if (typing && t - S.lastKey < 0.6) focus = screen(keyboard.keyTop(typing.key, tmp2), focusScr);
+    else if (tailTap.key && t - tailTap.t0 < 0.6) focus = screen(tailTap.tip, focusScr);
+    else if (S.cursor) focus = focusScr.set(S.cursor.x, S.cursor.y, 0);
     let lx = 0, ly = 0;
     if (focus) {
       lx = clamp((focus.x - headScreen.x) / 260, -1, 1);
@@ -409,7 +441,7 @@
       e.group.scale.x = 1 + 0.06 * curious;
       let px = P.gazeX.x, py = P.gazeY.x;
       if (focus) {
-        const es = screen(e.group.getWorldPosition(tmp2), V());
+        const es = screen(e.group.getWorldPosition(tmp2), eyeScr);
         px = clamp((focus.x - es.x) / 170, -1, 1);
         py = clamp((focus.y - es.y) / 170, -1, 1);
       }
@@ -445,7 +477,12 @@
     }
     S.thumpLift += (lift - S.thumpLift) * approach(40, dt);
     // The tip touches the right half of the space bar; the tail is about 0.075 thick there.
-    if (tailTap.key) keyboard.keyTop(tailTap.key, tailTap.tip).add(V(0.36, 0.075 + tailTap.hover, -0.02));
+    if (tailTap.key) {
+      keyboard.keyTop(tailTap.key, tailTap.tip);
+      tailTap.tip.x += 0.36;
+      tailTap.tip.y += 0.075 + tailTap.hover;
+      tailTap.tip.z -= 0.02;
+    }
     const reach = smooth(0, 1, tailTap.reach);
     cat.updateTail(S.tailPhase, (1 - S.sleep) * (1 + 0.6 * S.excite + flickTail + 1.5 * S.annoy) * (1 - cross) * (1 - 0.55 * curious) * (1 - reach), S.sleep,
       cross * (1 - reach), S.thumpLift, lash, reach, tailTap.tip);
@@ -464,7 +501,7 @@
     }
     for (let i = effects.length - 1; i >= 0; i--) {
       const fx = effects[i], age = t - fx.t0, u = age / fx.life;
-      if (u >= 1) { scene.remove(fx.sprite); effects.splice(i, 1); continue; }
+      if (u >= 1) { releaseSprite(fx.sprite); effects.splice(i, 1); continue; }
       fx.sprite.position.copy(fx.from).addScaledVector(fx.vel, age);
       const s = fx.size * (fx.kind === 'bang' ? 0.5 + 0.7 * smooth(0, 0.3, u) : 0.6 + 0.9 * u);
       fx.sprite.scale.set(s, s, 1);
@@ -479,18 +516,21 @@
       const pop = 0.6 + 0.4 * Math.min(1, age / 0.12);
       const h = 0.27 * pop;
       p.sprite.scale.set(h * p.sprite.userData.aspect, h, 1);
-      p.sprite.position.copy(p.sprite.userData.base).add(V(0, 0.22 + 0.14 * smooth(0, 0.25, age), 0));
+      const base = p.sprite.userData.base;
+      p.sprite.position.set(base.x, base.y + 0.22 + 0.14 * smooth(0, 0.25, age), base.z);
       p.sprite.material.opacity = fade;
-      if (fade <= 0) { scene.remove(p.sprite); popups.splice(i, 1); }
+      if (fade <= 0) { releaseSprite(p.sprite); popups.splice(i, 1); }
     }
 
     if (S.sleep > 0.7 && t > S.nextZ) {
       S.nextZ = t + 1.3;
       const { tex } = K.labelTexture('Z', 'z');
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
-      sprite.renderOrder = 40;
-      cat.head.getWorldPosition(sprite.position).add(V(0.45, 0.55, 0));
-      sprite.userData.base = sprite.position.clone();
+      const sprite = acquireSprite(tex, 40);
+      cat.head.getWorldPosition(sprite.position);
+      sprite.position.x += 0.45;
+      sprite.position.y += 0.55;
+      if (sprite.userData.base) sprite.userData.base.copy(sprite.position);
+      else sprite.userData.base = sprite.position.clone();
       scene.add(sprite);
       zs.push({ sprite, t0: t });
     }
@@ -498,12 +538,15 @@
       const z = zs[i], age = t - z.t0;
       const s = 0.16 + age * 0.08;
       z.sprite.scale.set(s, s, 1);
-      z.sprite.position.copy(z.sprite.userData.base).add(V(Math.sin(age * 2.2) * 0.08 + age * 0.12, age * 0.32, 0));
+      const base = z.sprite.userData.base;
+      z.sprite.position.set(base.x + Math.sin(age * 2.2) * 0.08 + age * 0.12, base.y + age * 0.32, base.z);
       z.sprite.material.opacity = clamp(Math.min(age / 0.3, (2.6 - age) / 0.6), 0, 1);
-      if (age > 2.6) { scene.remove(z.sprite); zs.splice(i, 1); }
+      if (age > 2.6) { releaseSprite(z.sprite); zs.splice(i, 1); }
     }
 
-    if (pet || popups.length || zs.length || effects.length || cross > 0.02 || S.sleep > 0.02 && S.sleep < 0.98 || t - S.wakeAt < 0.7) {
+    // Keep active frame rate for interactive/transient animations; steady sleep Zs run smoothly
+    // at the idle/sleep cadence (min(fps, 30)) instead of forcing full frame rate overnight.
+    if (pet || popups.length || effects.length || cross > 0.02 || (S.sleep > 0.02 && S.sleep < 0.98) || t - S.wakeAt < 0.7) {
       S.busyUntil = Math.max(S.busyUntil, t + 0.5);
     }
   }
@@ -512,6 +555,7 @@
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const dragMeshes = [...cat.dragMeshes, ...keyboard.hitMeshes, ...mouseProp.hitMeshes];
   function hitTest(x, y) {
+    if (x < 0 || x > window.innerWidth || y < 0 || y > window.innerHeight) return 'none';
     ndc.set(x / window.innerWidth * 2 - 1, -(y / window.innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
     if (ray.intersectObjects(cat.petMeshes, false).length) return 'pet';
@@ -519,25 +563,112 @@
     return 'none';
   }
 
-  let last = now(), frame = 0;
+  let last = now(), paused = false, rafId = 0, timerId = 0, cursorDirty = false;
+  // Tracks the host display's native rAF period so we never throttle when the display is already
+  // at or below the target FPS, and never leave empty rAF callbacks that Chromium can suspend.
+  let rafPeriod = 1 / 60, lastRafAt = 0, timerThrottled = false;
+
+  function scheduleNext(frameStart) {
+    if (paused || rafId || timerId) return;
+    const limit = opts.fps;
+    if (limit <= 0) {
+      rafId = requestAnimationFrame(loop);
+      return;
+    }
+    const target = frameStart < S.busyUntil ? limit : Math.min(limit, 30);
+    const interval = 1 / target;
+    if (interval <= rafPeriod * 1.15 || timerThrottled) {
+      rafId = requestAnimationFrame(loop);
+      return;
+    }
+    const elapsed = now() - frameStart;
+    const waitMs = Math.floor((interval - elapsed - rafPeriod * 0.5) * 1000);
+    if (waitMs > 4) {
+      const scheduledAt = now();
+      timerId = setTimeout(() => {
+        timerId = 0;
+        if ((now() - scheduledAt) * 1000 > waitMs + 120) timerThrottled = true;
+        if (!paused && !rafId) rafId = requestAnimationFrame(loop);
+      }, waitMs);
+    } else {
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+
+  function wakeFrame() {
+    if (paused) return;
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = 0;
+      if (!rafId) rafId = requestAnimationFrame(loop);
+    }
+  }
+
   function loop() {
-    requestAnimationFrame(loop);
-    S.ticks = (S.ticks || 0) + 1;
-    if (frozen !== null) return;
+    rafId = 0;
+    if (paused) return;
+    if (frozen !== null) {
+      rafId = requestAnimationFrame(loop);
+      return;
+    }
     const t = now();
-    const dt = Math.min(0.1, t - last);
-    const busy = t < S.busyUntil;
-    // When nothing is happening, draw ~20 fps: enough for breathing and eye tracking.
-    if (!busy && ++frame % 3 !== 0) return;
+    if (timerThrottled && opts.fps > 0) {
+      const target = t < S.busyUntil ? opts.fps : Math.min(opts.fps, 30);
+      if (t - last < (1 / target) * 0.92) {
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
+    }
+    // Estimate native VSync period only from back-to-back rAF ticks (not after timer sleeps).
+    if (lastRafAt > 0) {
+      const gap = t - lastRafAt;
+      if (gap > 0.002 && gap < 0.04) rafPeriod = rafPeriod * 0.8 + gap * 0.2;
+    }
+    lastRafAt = t;
+    const dt = Math.min(0.1, Math.max(0, t - last));
     last = t;
+    S.ticks = (S.ticks || 0) + 1;
     update(t, dt);
     renderer.render(scene, camera);
     if (S.cursor) {
-      const hit = hitTest(S.cursor.x, S.cursor.y);
+      const { x, y } = S.cursor;
+      let hit = 'none';
+      if (x >= 0 && x <= window.innerWidth && y >= 0 && y <= window.innerHeight) {
+        if (cursorDirty || t < S.busyUntil) {
+          hit = hitTest(x, y);
+          cursorDirty = false;
+        } else {
+          hit = S.hit;
+        }
+      } else {
+        cursorDirty = false;
+      }
       if (hit !== S.hit) {
         S.hit = hit;
         window.webkit?.messageHandlers?.cat?.postMessage({ hit });
       }
+    }
+    scheduleNext(t);
+    if (timerId) lastRafAt = 0;
+  }
+
+  function setPaused(next) {
+    const want = !!next;
+    if (paused === want) return;
+    paused = want;
+    if (paused) {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      if (timerId) { clearTimeout(timerId); timerId = 0; }
+      lastRafAt = 0;
+      if (S.hit !== 'none') {
+        S.hit = 'none';
+        window.webkit?.messageHandlers?.cat?.postMessage({ hit: 'none' });
+      }
+    } else {
+      last = now();
+      lastRafAt = 0;
+      S.busyUntil = Math.max(S.busyUntil, last + 0.5);
+      if (!rafId) rafId = requestAnimationFrame(loop);
     }
   }
 
@@ -557,6 +688,7 @@
     // Canvas CSS pixels; may lie outside the canvas so the eyes keep following the pointer.
     cursor(x, y) {
       if (!S.cursor || Math.abs(S.cursor.x - x) + Math.abs(S.cursor.y - y) > 3) S.cursorSeen = now();
+      if (!S.cursor || S.cursor.x !== x || S.cursor.y !== y) cursorDirty = true;
       S.cursor = { x, y };
       S.busyUntil = Math.max(S.busyUntil, now() + 0.6);
     },
@@ -566,33 +698,37 @@
       S.petStart = down ? (S.petStart < 0 ? t : S.petStart) : -1;
       if (down) {
         S.petUntil = t + 0.9;
-        const hs = screen(cat.head.getWorldPosition(tmp2), V());
+        const hs = screen(cat.head.getWorldPosition(tmp2), headScr);
         S.petX = (x - hs.x) / 120;
         wake(t);
       }
     },
     options(o) {
       Object.assign(opts, o);
+      if (typeof opts.fps !== 'number' || !Number.isFinite(opts.fps) || opts.fps < 0) opts.fps = 60;
       // `tune` holds only the settings that differ from the defaults, so start from those.
       if (o.tune) {
         for (const g of TUNING_SCHEMA) for (const it of g.items) TUNING[it.key] = it.key in o.tune ? o.tune[it.key] : it.def;
       }
       cat.setLook(Object.fromEntries(Object.entries(o).filter(([k]) => k in cat.look)));
       S.busyUntil = now() + 1;
+      wakeFrame();
     },
+    setPaused,
     sleepNow() { S.asleep = true; S.lastInput = now() - opts.sleepAfter; },
     // Makes the cat cross right away (for checking the tail thump).
     annoyNow() { poke(1, now(), true); S.busyUntil = now() + 3; },
     // Makes the cat curious for a few seconds (the 调节 window's 试试 button).
     curiousNow(seconds = 3) { const t = now(); S.curiousUntil = t + seconds; S.busyUntil = t + seconds + 1; wake(t); },
     reset() {
+      clearTimeout(capsTimer); capsTimer = 0;
       S.mouseDown = false; S.lastMouse = -100; S.lastKey = -100; S.petting = false; S.petUntil = 0;
       S.asleep = false; S.sleep = 0; S.lastInput = now(); S.busyUntil = now() + 2;
       S.strokes = []; S.excite = 0; S.act = null; S.nextAct = now() + 4;
       S.annoy = 0; S.cross = false; S.petStart = -1; S.thumpLift = 0;
       S.moves = []; S.mouseSpeed = 0; S.curiousUntil = -100;
       P.cross.set(0); P.desk.set(0); P.curious.set(0);
-      for (const fx of [...effects, ...zs, ...popups]) scene.remove(fx.sprite);
+      for (const fx of [...effects, ...zs, ...popups]) releaseSprite(fx.sprite);
       effects.length = 0;
       zs.length = 0;
       popups.length = 0;

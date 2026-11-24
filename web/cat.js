@@ -49,31 +49,20 @@
   bodyGeo.setAttribute('rest', bodyGeo.attributes.position.clone());
   const bodyMesh = new THREE.Mesh(bodyGeo, fur.body);
   bodyMesh.scale.set(1, 1, 0.82);
-  const rimGeo = bodyGeo.clone();
-  const bodyRim = new THREE.Mesh(rimGeo, rimMat);
+  const bodyRimMat = K.bodyRimMaterial('#f6f3e8', 1 / 1.045, 1 / 0.86);
+  const bodyRim = new THREE.Mesh(bodyGeo, bodyRimMat);
   bodyRim.scale.set(1.045, 1.018, 0.86);
   bodyRim.renderOrder = -1;
   body.add(bodyRim, bodyMesh);
 
   // The spine bends instead of the whole body tipping over: the haunches stay planted and the
   // chest, neck and head shift sideways (x) and forward (z) more the higher up they are.
-  // `squash` sinks the upper body into a loaf.
+  // `squash` sinks the upper body into a loaf. Vertex deformation runs on the GPU (see fur.js).
   const bend = { x: 0, z: 0, squash: 0 };
   const spineWeight = y => smooth(0.15, BODY_H, y) ** 1.6;
   const sink = y => smooth(0.2, BODY_H, y);
-  const rest = [bodyGeo, rimGeo].map(g => Float32Array.from(g.attributes.position.array));
   function bendBody() {
-    [[bodyGeo, bodyMesh], [rimGeo, bodyRim]].forEach(([g, mesh], gi) => {
-      const src = rest[gi], pos = g.attributes.position.array, sx = mesh.scale.x, sz = mesh.scale.z;
-      for (let i = 0; i < pos.length; i += 3) {
-        const y = src[i + 1], w = spineWeight(y);
-        pos[i] = src[i] + bend.x * w / sx;
-        pos[i + 1] = y * (1 - bend.squash * sink(y));
-        pos[i + 2] = src[i + 2] + bend.z * w / sz;
-      }
-      g.attributes.position.needsUpdate = true;
-      g.computeBoundingSphere();
-    });
+    K.setBodyBend(bend.x, bend.squash, bend.z);
   }
   // The collar rides the bent neck and tips with the slope of the spine there. When the head nods
   // down (asleep, hunched over the keys) the chin tucks into the neck and pushes the collar lower
@@ -155,7 +144,7 @@
   const collar = new THREE.Group();
   // Only the front arc of the band is drawn, ending with round tips just inside the silhouette:
   // a full ring would poke out past the neck outline as dark tabs at either side.
-  const band = K.limb(collar, { segments: 40, radial: 8, fill: collarMat, outline: collarRimMat, order: 1,
+  const band = K.limb(collar, { segments: 40, radial: 8, fill: collarMat, outline: collarRimMat, order: 1, raycast: false,
     edge: t => 0.01 * smooth(0, 0.22, Math.min(t, 1 - t)) });
   band.update((t, out) => {
     // The ends thin out and curl round behind the neck, so the band seems to carry on out of view.
@@ -293,7 +282,9 @@
   const earGeo = k => earGeos[k] || (earGeos[k] = (() => {
     const geos = [0, 0.026].map(grow => {
       const g = earLathe(earProfile(k, grow));
-      g.setAttribute('rest', earLathe(earProfile(1, grow)).attributes.position);
+      const base = earLathe(earProfile(1, grow));
+      g.setAttribute('rest', base.attributes.position.clone());
+      base.dispose();
       g.computeVertexNormals();
       return g;
     });
@@ -570,6 +561,7 @@
     chinLine.visible = !solid;
     chinMat.uniforms.uColor.value.set(c.ink || c.arm);
     rimMat.color.set(c.rim);
+    bodyRimMat.uniforms.uColor.value.set(c.rim);
     armRimMat.color.set(c.arm);
     pawMat.color.set(c.paw);
     toeMat.color.set(c.toe);

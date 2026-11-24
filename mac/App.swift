@@ -86,6 +86,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         get { defaults.object(forKey: "sleepAfter") as? Int ?? 60 }
         set { defaults.set(newValue, forKey: "sleepAfter") }
     }
+    /// Target FPS cap: 30, 60 (default), detected high refresh rate, or 0 for unlimited.
+    var fps: Int {
+        get {
+            guard let v = defaults.object(forKey: "fps") as? Int else { return 60 }
+            return (v == 0 || (15...1000).contains(v)) ? v : 60
+        }
+        set { defaults.set(newValue, forKey: "fps") }
+    }
+    var debugStatusEnabled: Bool {
+        ProcessInfo.processInfo.environment["KEYCAT_DEBUG_STATUS"] != nil
+    }
+    /// Highest native refresh rate (> 60 Hz) among connected displays, if any.
+    func detectedHighFPS() -> Int? {
+        let maxHz = NSScreen.screens.map(\.maximumFramesPerSecond).max() ?? 60
+        return maxHz > 60 ? maxHz : nil
+    }
+    private func pointerTickInterval() -> TimeInterval {
+        let target: Int
+        if fps == 0 {
+            target = max(detectedHighFPS() ?? 60, 60)
+        } else {
+            target = min(max(fps, 15), 240)
+        }
+        return 1.0 / Double(min(target, 240))
+    }
+
+    func startPointerTimer() {
+        timer?.invalidate()
+        guard panel.isVisible else { timer = nil; return }
+        let t = Timer(timeInterval: pointerTickInterval(), repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stopPointerTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func setPanelVisible(_ visible: Bool) {
+        if visible {
+            panel.orderFrontRegardless()
+            js("cat.setPaused(false)")
+            startPointerTimer()
+        } else {
+            stopPointerTimer()
+            webView.cancelInteractions()
+            hit = "none"
+            dragging = false
+            pendingDelta = .zero
+            panel.ignoresMouseEvents = true
+            js("cat.setPaused(true)")
+            panel.orderOut(nil)
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -112,11 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
 
         installMouseMonitors()
         startKeyboardTap()
-        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+        startPointerTimer()
         updater.start()
     }
 
@@ -147,10 +200,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         log("page loaded")
         pageReady = true
         pushOptions()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.reportStatus() }
-        statusTimer?.invalidate()
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reportStatus() }
+        if !panel.isVisible {
+            js("cat.setPaused(true)")
+        }
+        if debugStatusEnabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.reportStatus() }
+            statusTimer?.invalidate()
+            statusTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reportStatus() }
+            }
         }
     }
 
@@ -176,9 +234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         return dir.appendingPathComponent(name)
     }
 
-    /// Appends to log.txt in the support folder (lifecycle only, never input).
+    /// Appends to log.txt in the support folder (lifecycle only, never input), rotating at 1 MB.
     func log(_ text: String) {
         let url = supportFile("log.txt")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? NSNumber, size.int64Value > (1 << 20) {
+            let old = supportFile("log.old.txt")
+            try? FileManager.default.removeItem(at: old)
+            try? FileManager.default.moveItem(at: url, to: old)
+        }
         let line = "\(Date()) \(text)\n".data(using: .utf8)!
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
@@ -193,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         let options: [String: Any] = ["style": style, "coat": coat, "pattern": pattern, "eye": eyeColor, "shine": eyeShine, "blush": blush,
                                       "whiskers": whiskers, "collar": collar,
                                       "privacy": privacy, "sleepAfter": sleepAfter > 0 ? sleepAfter : 1e9,
-                                      "tune": tune]
+                                      "fps": fps, "tune": tune]
         guard let data = try? JSONSerialization.data(withJSONObject: options),
               let json = String(data: data, encoding: .utf8) else { return }
         js("cat.options(\(json))")
@@ -207,6 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     // MARK: Frame loop: forward the pointer to the page.
 
     func tick() {
+        guard panel.isVisible else { return }
         let screen = NSEvent.mouseLocation
         let inWindow = panel.convertPoint(fromScreen: screen)
         let page = CGPoint(x: inWindow.x.rounded(), y: (panel.frame.height - inWindow.y).rounded())
@@ -220,7 +285,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             pendingDelta = .zero
         }
         if !calls.isEmpty { js(calls.joined(separator: ";")) }
-        if hit != "none" && !dragging { refreshCursor() }
     }
 
     /// The page reports what is under the pointer; only the cat itself takes clicks.
@@ -250,18 +314,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
             return event
         }
         NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
-            MainActor.assumeIsolated { self?.pendingDelta.y += -event.scrollingDeltaY * 0.4 }
+            MainActor.assumeIsolated {
+                guard let self, self.panel.isVisible else { return }
+                self.pendingDelta.y += -event.scrollingDeltaY * 0.4
+            }
         }
         let buttons: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp]
         NSEvent.addGlobalMonitorForEvents(matching: buttons) { [weak self] event in
             MainActor.assumeIsolated {
+                guard let self, self.panel.isVisible else { return }
                 let down = [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
-                self?.js("cat.mouseButton(\(down))")
+                if event.type == .leftMouseUp { self.webView.cancelInteractions() }
+                self.js("cat.mouseButton(\(down))")
             }
         }
     }
 
     func addDelta(_ event: NSEvent) {
+        guard panel.isVisible else { return }
         pendingDelta.x += event.deltaX
         pendingDelta.y += event.deltaY
     }
@@ -269,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     /// Only which key went down or up reaches the page; nothing typed is stored or logged.
     func handleKey(_ keyCode: Int, down: Bool) {
         keyEvents += 1
-        guard let code = KeyMap.code(keyCode) else { return }
+        guard panel.isVisible, let code = KeyMap.code(keyCode) else { return }
         js("cat.key('\(code)',\(down))")
     }
 
@@ -294,7 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
                 self.keyboardAllowed = true
                 self.updateStatusTitle()
                 timer.invalidate()
-                self.reportStatus()
+                if self.debugStatusEnabled { self.reportStatus() }
             }
         }
     }

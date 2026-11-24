@@ -4,7 +4,7 @@ import WebKit
 /// The 调节 window: web/settings.html lists the behaviour settings defined in web/tuning.js.
 /// Each change is saved at once (only values that differ from the defaults) and pushed to the cat.
 @MainActor
-final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+final class SettingsWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     weak var app: AppDelegate?
     var window: NSWindow?
     var view: WKWebView?
@@ -28,6 +28,7 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
                               backing: .buffered, defer: false)
         window.title = "KeyCat 调节"
         window.contentView = view
+        window.delegate = self
         window.isReleasedWhenClosed = false
         window.center()
         if let page = Bundle.main.url(forResource: "settings", withExtension: "html", subdirectory: "web") {
@@ -35,6 +36,16 @@ final class SettingsWindow: NSObject, WKScriptMessageHandler, WKNavigationDelega
         }
         self.window = window
         self.view = view
+    }
+
+    /// Release the settings WKWebView on close so its WebContent process is reclaimed.
+    func windowWillClose(_ notification: Notification) {
+        view?.configuration.userContentController.removeScriptMessageHandler(forName: "settings")
+        view?.navigationDelegate = nil
+        window?.contentView = nil
+        window?.delegate = nil
+        view = nil
+        window = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

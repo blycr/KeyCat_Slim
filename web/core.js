@@ -100,15 +100,30 @@ const K = {};
   K.flat = color => new THREE.MeshBasicMaterial({ color });
   K.back = color => new THREE.MeshBasicMaterial({ color, side: THREE.BackSide });
 
+  // Shared scratch vectors for TaperTube updates (zero per-frame allocations).
+  const _ttT = V(0, 0, 0), _ttN = V(0, 0, 0), _ttB = V(0, 0, 0), _ttTmp = V(0, 0, 0);
+
   // A tube whose radius varies along its length, rebuilt in place every frame.
   // `point(t, out)` gives the centre line, `radius(t)` the thickness, t in [0, 1].
   class TaperTube {
-    constructor(segments, radial, material, renderOrder = 0) {
+    constructor(segments, radial, material, renderOrder = 0, computeBounds = false) {
       this.n = segments; this.m = radial;
+      this.computeBounds = computeBounds;
+      this.cos = new Float32Array(radial);
+      this.sin = new Float32Array(radial);
+      for (let j = 0; j < radial; j++) {
+        const a = j / radial * Math.PI * 2;
+        this.cos[j] = Math.cos(a);
+        this.sin[j] = Math.sin(a);
+      }
       const geo = new THREE.BufferGeometry();
       const count = (segments + 1) * radial;
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+      const posAttr = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
+      const nrmAttr = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      nrmAttr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', posAttr);
+      geo.setAttribute('normal', nrmAttr);
       // How far along the tube each vertex is (0..1), for fur markings that follow it.
       geo.setAttribute('along', new THREE.BufferAttribute(Float32Array.from({ length: count }, (_, k) => Math.floor(k / radial) / segments), 1));
       const index = [];
@@ -124,35 +139,79 @@ const K = {};
     }
 
     update(point, radius, grow = 0) {
-      const { n, m, pts } = this;
+      const { n, m, pts, cos, sin } = this;
       for (let i = 0; i <= n; i++) point(i / n, pts[i]);
       const pos = this.mesh.geometry.attributes.position.array, nrm = this.mesh.geometry.attributes.normal.array;
-      const T = V(0, 0, 0), N = V(0, 0, 0), B = V(0, 0, 0), tmp = V(0, 0, 0);
+      const growFn = typeof grow === 'function';
       for (let i = 0; i <= n; i++) {
-        T.subVectors(pts[Math.min(n, i + 1)], pts[Math.max(0, i - 1)]).normalize();
+        _ttT.subVectors(pts[Math.min(n, i + 1)], pts[Math.max(0, i - 1)]).normalize();
         if (i === 0) {
-          tmp.set(0, 1, 0);
-          if (Math.abs(T.dot(tmp)) > 0.9) tmp.set(1, 0, 0);
-          N.crossVectors(T, tmp).normalize();
+          _ttTmp.set(0, 1, 0);
+          if (Math.abs(_ttT.dot(_ttTmp)) > 0.9) _ttTmp.set(1, 0, 0);
+          _ttN.crossVectors(_ttT, _ttTmp).normalize();
         } else {
-          B.crossVectors(N, T);
-          N.crossVectors(T, B).normalize();
+          _ttB.crossVectors(_ttN, _ttT);
+          _ttN.crossVectors(_ttT, _ttB).normalize();
         }
-        B.crossVectors(T, N).normalize();
-        const r = radius(i / n) + (typeof grow === 'function' ? grow(i / n) : grow);
+        _ttB.crossVectors(_ttT, _ttN).normalize();
+        const t = i / n;
+        const r = radius(t) + (growFn ? grow(t) : grow);
+        const px = pts[i].x, py = pts[i].y, pz = pts[i].z;
+        const nx = _ttN.x, ny = _ttN.y, nz = _ttN.z;
+        const bx = _ttB.x, by = _ttB.y, bz = _ttB.z;
+        const base = i * m * 3;
         for (let j = 0; j < m; j++) {
-          const a = j / m * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), c = ca * r, s = sa * r, k = (i * m + j) * 3;
-          pos[k] = pts[i].x + N.x * c + B.x * s;
-          pos[k + 1] = pts[i].y + N.y * c + B.y * s;
-          pos[k + 2] = pts[i].z + N.z * c + B.z * s;
-          nrm[k] = N.x * ca + B.x * sa;
-          nrm[k + 1] = N.y * ca + B.y * sa;
-          nrm[k + 2] = N.z * ca + B.z * sa;
+          const ca = cos[j], sa = sin[j], c = ca * r, s = sa * r, k = base + j * 3;
+          pos[k] = px + nx * c + bx * s;
+          pos[k + 1] = py + ny * c + by * s;
+          pos[k + 2] = pz + nz * c + bz * s;
+          nrm[k] = nx * ca + bx * sa;
+          nrm[k + 1] = ny * ca + by * sa;
+          nrm[k + 2] = nz * ca + bz * sa;
         }
       }
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.mesh.geometry.attributes.normal.needsUpdate = true;
-      this.mesh.geometry.computeBoundingSphere();
+      if (this.computeBounds) this.mesh.geometry.computeBoundingSphere();
+    }
+
+    // Updates a fill + outline tube pair sharing one centreline and parallel-transport frame.
+    static updatePair(body, rim, point, radius, edgeAt) {
+      const { n, m, pts, cos, sin } = body;
+      for (let i = 0; i <= n; i++) point(i / n, pts[i]);
+      const bPos = body.mesh.geometry.attributes.position.array, bNrm = body.mesh.geometry.attributes.normal.array;
+      const rPos = rim.mesh.geometry.attributes.position.array, rNrm = rim.mesh.geometry.attributes.normal.array;
+      for (let i = 0; i <= n; i++) {
+        _ttT.subVectors(pts[Math.min(n, i + 1)], pts[Math.max(0, i - 1)]).normalize();
+        if (i === 0) {
+          _ttTmp.set(0, 1, 0);
+          if (Math.abs(_ttT.dot(_ttTmp)) > 0.9) _ttTmp.set(1, 0, 0);
+          _ttN.crossVectors(_ttT, _ttTmp).normalize();
+        } else {
+          _ttB.crossVectors(_ttN, _ttT);
+          _ttN.crossVectors(_ttT, _ttB).normalize();
+        }
+        _ttB.crossVectors(_ttT, _ttN).normalize();
+        const t = i / n;
+        const r1 = radius(t);
+        const r2 = r1 + edgeAt(t);
+        const px = pts[i].x, py = pts[i].y, pz = pts[i].z;
+        const nx = _ttN.x, ny = _ttN.y, nz = _ttN.z;
+        const bx = _ttB.x, by = _ttB.y, bz = _ttB.z;
+        const base = i * m * 3;
+        for (let j = 0; j < m; j++) {
+          const ca = cos[j], sa = sin[j], k = base + j * 3;
+          const vx = nx * ca + bx * sa, vy = ny * ca + by * sa, vz = nz * ca + bz * sa;
+          bPos[k] = px + vx * r1; bPos[k + 1] = py + vy * r1; bPos[k + 2] = pz + vz * r1;
+          rPos[k] = px + vx * r2; rPos[k + 1] = py + vy * r2; rPos[k + 2] = pz + vz * r2;
+          bNrm[k] = rNrm[k] = vx; bNrm[k + 1] = rNrm[k + 1] = vy; bNrm[k + 2] = rNrm[k + 2] = vz;
+        }
+      }
+      body.mesh.geometry.attributes.position.needsUpdate = true;
+      body.mesh.geometry.attributes.normal.needsUpdate = true;
+      rim.mesh.geometry.attributes.position.needsUpdate = true;
+      rim.mesh.geometry.attributes.normal.needsUpdate = true;
+      if (body.computeBounds) body.mesh.geometry.computeBoundingSphere();
     }
   }
 
@@ -161,10 +220,10 @@ const K = {};
   // A tapered limb with rounded ends and a sticker outline behind it. `edge` is the outline width,
   // or a function of t: a negative width sinks the outline inside the fill, so it does not show
   // there (an arm growing out of the chest has no line where it joins).
-  K.limb = (parent, { segments = 18, radial = 14, fill, outline, edge, order = 0, capStart = true }) => {
+  K.limb = (parent, { segments = 18, radial = 14, fill, outline, edge, order = 0, capStart = true, raycast = true }) => {
     const edgeAt = typeof edge === 'function' ? edge : () => edge;
-    const body = new TaperTube(segments, radial, fill, order);
-    const rim = new TaperTube(segments, radial, outline, order - 1);
+    const body = new TaperTube(segments, radial, fill, order, raycast);
+    const rim = new TaperTube(segments, radial, outline, order - 1, false);
     const cap = along => {
       const g = new THREE.SphereGeometry(1, 20, 14);
       g.setAttribute('along', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count).fill(along), 1));
@@ -184,9 +243,8 @@ const K = {};
     return {
       body: body.mesh,
       update(point, radius) {
-        body.update(point, radius);
-        rim.update(point, radius, edgeAt);
-        point(0, a); point(1, b);
+        TaperTube.updatePair(body, rim, point, radius, edgeAt);
+        a.copy(body.pts[0]); b.copy(body.pts[body.n]);
         for (const c of caps) {
           c.start.position.copy(a); c.start.scale.setScalar(Math.max(0.001, radius(0) + (c.rim ? edgeAt(0) : 0)));
           c.end.position.copy(b); c.end.scale.setScalar(radius(1) + (c.rim ? edgeAt(1) : 0));
