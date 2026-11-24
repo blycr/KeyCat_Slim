@@ -3,9 +3,6 @@
 //!   windows alike without taking focus.
 //! - Mouse uses Raw Input (`RIDEV_INPUTSINK`) on a message-only window instead of `WH_MOUSE_LL`,
 //!   so 1000–8000 Hz gaming mice never suffer synchronous cross-process hook overhead on move.
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::SyncSender;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Button {
@@ -280,4 +277,4 @@ mod imp {
     }
 }
 
-pub use imp::{is_vk_down, start, HookGuard};
+pub use imp::{is_vk_down, start};
