@@ -34,6 +34,10 @@ sh mac/package.sh     # → dist/KeyCat-macOS.zip + .sha256 + latest-mac.json
 cd win && npm ci
 npm start             # 本机调试
 npm run dist          # → win/target/release/bundle/nsis/KeyCat_<版本>_x64-setup.exe（需 Rust 和 Node.js 22+，在 Windows 上执行）
+
+cd native
+cargo test -p keycat-core
+cargo build --release -p keycat-native   # Windows 原生版（不带 WebView2）；Linux/WSL 可用 cargo xwin 交叉编译
 ```
 
 mac 版用 `signing/` 里自动生成的本地证书签名，这样重新编译后「输入监控」授权仍然有效。mac 自动更新只接受同一张证书签名的新版，所以发布包必须在有这个目录的机器上打，证书丢了已安装的 mac 版也收不到更新。Windows 自动更新的签名私钥也放在这里（`tauri-updater.key` 和它的密码 `tauri-updater.password`），内容同时存在仓库的 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 Secret 里，公钥写在 `win/tauri.conf.json`。私钥丢了已安装的版本就收不到更新，要另外备份。不要提交这个目录。
@@ -52,6 +56,7 @@ mac 和 Windows 共用一个 Release，两边产物都要上传，否则另一�
 mac/    macOS 外壳（Swift）：浮窗、菜单、键鼠监听、自动更新、构建/签名/打包脚本
 win/    Windows 外壳（Tauri，Rust）：托盘、全局键鼠钩子、自动更新，页面由系统 WebView2 绘制
 web/    两端共用的 three.js 场景：猫、键盘、动作，tuning.js 是可调参数的唯一来源
+native/ 原生重构版（开发中）：core/ 是跨平台 3D 与动作逻辑，win/ 是不带 WebView2 的 Windows 原生外壳（D3D11 + DirectComposition）
 site/   下载页，由 .github/workflows/pages.yml 连同 web/ 一起部署到 GitHub Pages，每 3 小时刷新一次下载量
 tools/  开发用渲染脚本（serve.py 起本地服务，readme_gif.py 生成 README 动图，其余脚本在内置浏览器里截图对比）
 ```

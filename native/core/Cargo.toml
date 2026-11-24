@@ -1,0 +1,9 @@
+[package]
+name = "keycat-core"
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde_json = "1"

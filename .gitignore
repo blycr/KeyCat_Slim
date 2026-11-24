@@ -11,8 +11,9 @@ ref/
 
 .DS_Store
 
-# Windows build (Tauri)
+# Windows build (Tauri & Native)
 win/node_modules/
 win/target/
 win/gen/
 win/out/
+native/target/
