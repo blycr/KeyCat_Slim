@@ -76,6 +76,7 @@ jobs:
       - name: Verify Homebrew Cask syntax
         run: |
           brew tap blycr/tap https://github.com/blycr/homebrew-tap
+          brew trust blycr/tap || true
           brew info --cask blycr/tap/keycat
           brew style blycr/tap/keycat
 
