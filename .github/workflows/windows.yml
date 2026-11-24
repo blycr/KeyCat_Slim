@@ -3,17 +3,6 @@ name: Windows (Legacy WebView2)
 # Builds the legacy Tauri WebView2 installer in win/ on demand or when win/ or web/ changes.
 # v2.0.0+ releases ship the native Windows installer from native-windows.yml instead.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'win/**'
-      - 'web/**'
-      - '.github/workflows/windows.yml'
-  pull_request:
-    paths:
-      - 'win/**'
-      - 'web/**'
-      - '.github/workflows/windows.yml'
   workflow_dispatch:
     inputs:
       tag:
