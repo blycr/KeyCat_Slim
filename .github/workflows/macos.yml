@@ -1,12 +1,28 @@
 name: macOS
 
+# Builds the universal native Metal macOS app (native/mac + native/ffi, zero WebKit),
+# runs FFI + offscreen Metal smoke tests, and uploads KeyCat-macOS.zip on tag pushes.
 on:
   push:
+    branches: [main]
+    paths:
+      - 'native/core/**'
+      - 'native/ffi/**'
+      - 'native/mac/**'
+      - 'native/Cargo.*'
+      - '.github/workflows/macos.yml'
     tags: ['v*']
+  pull_request:
+    paths:
+      - 'native/core/**'
+      - 'native/ffi/**'
+      - 'native/mac/**'
+      - 'native/Cargo.*'
+      - '.github/workflows/macos.yml'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and upload (e.g. v1.1.0); leave empty to build current branch only'
+        description: 'Release tag to build and upload (e.g. v2.1.0); leave empty to build current branch only'
         required: false
         default: ''
 
@@ -21,21 +37,40 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Build and package universal macOS app
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Check that the tag matches native/mac/Info.plist
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          sh mac/package.sh
-          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' mac/Info.plist)"
-          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' mac/Info.plist)"
-          SHA="$(cut -d' ' -f1 dist/KeyCat-macOS.zip.sha256)"
-          cat > dist/latest-mac.json <<EOF
-          {
-            "version": "$VERSION",
-            "build": $BUILD,
-            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$VERSION/KeyCat-macOS.zip",
-            "sha256": "$SHA"
-          }
-          EOF
-          cat dist/latest-mac.json
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' native/mac/Info.plist)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match native/mac/Info.plist version $version" >&2
+            exit 1
+          fi
+
+      - name: Run Rust core & FFI unit tests
+        run: cargo test --manifest-path native/Cargo.toml -p keycat-core -p keycat-ffi
+
+      - name: Build and package universal native Metal macOS app
+        run: |
+          sh native/mac/package.sh
+          # Verify zero WebKit linkage and universal arm64 + x86_64 slices
+          lipo -info build/KeyCat.app/Contents/MacOS/KeyCat
+          otool -L build/KeyCat.app/Contents/MacOS/KeyCat
+          if otool -L build/KeyCat.app/Contents/MacOS/KeyCat | grep -qi WebKit; then
+            echo "Unexpected WebKit linkage detected!" >&2
+            exit 1
+          fi
+
+      - name: Run native FFI & Metal smoke test
+        run: |
+          build/KeyCat.app/Contents/MacOS/KeyCat --smoke-test dist/smoke.png
           ls -lh dist
 
       - name: Upload to GitHub Release
