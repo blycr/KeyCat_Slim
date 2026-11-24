@@ -8,35 +8,35 @@ English | [简体中文](README.md)
 
 A lightweight native desktop pet cat that sits on a tiny keyboard: it taps keys as you type, follows your cursor, closes its eyes when petted, falls asleep when idle, and slams the desk with its tail when annoyed.
 
-KeyCat Slim is a native rewrite based on [ElloboDK/KeyCat](https://github.com/ElloboDK/KeyCat). **Both Windows and macOS editions have completely removed WebView2 and WKWebView**, sharing a single Rust 3D/physics/behavior engine for full visual fidelity, high-refresh smoothness, and minimal footprint.
+KeyCat Slim is a native rewrite based on [ElloboDK/KeyCat](https://github.com/ElloboDK/KeyCat). Both Windows and macOS editions have completely removed WebView2 and WKWebView, sharing a single cross-platform Rust 3D engine for full visual fidelity, high-refresh smoothness, and minimal resource usage.
 
 ![KeyCat Demo](assets/media/keycat.gif)
 
-## Highlights
+## Features
 
 - **Zero WebView on Both Platforms**
   - Windows: Rust + Direct3D 11 (4x MSAA) + DirectComposition + Direct2D. Per-user NSIS installer is ~390 KB with no WebView2 dependency.
   - macOS: Swift + Metal (4x MSAA) + AppKit universal binary (`arm64` + `x86_64`), ~1.6 MB zipped, zero WebKit linkage.
 - **Shared Cross-Platform Rust Core**
-  - Procedural 3D geometry, 11 coat styles, spring physics, and behavior state machine live in `crates/core`, ensuring consistent visuals and reactions across OSes.
-- **Adaptive & Locked Frame Rates**
-  - Default **Auto** mode renders up to 60 fps (or display refresh rate if lower) while active, and throttles down automatically while idle or asleep.
-  - Manual presets include `30 fps`, `60 fps`, native high-refresh display rate (`120`/`144`/`165`/`240 fps`), or **Unlimited**.
-- **Rich Customization**
-  - 11 coats, 2D/3D shading mode, eye colors & highlights, collars, blush, whiskers, window scaling, sleep timeout, and a dedicated native tuning panel for curiosity/annoyance thresholds.
-- **Privacy First & Reliable Input**
-  - Never records typed text or uploads telemetry. Only reacts to key up/down events and cursor position, with automatic stuck-key self-healing after lock screen, UAC prompts, or macOS Secure Input fields.
+  - Procedural 3D geometry, 11 coats, spring physics, and the behavior state machine live in a single Rust core crate for consistent visuals and reactions across platforms.
+- **Adaptive and Locked Frame Rates**
+  - Default **Auto** mode renders up to 60 fps (or display refresh rate if lower) while active and scales down automatically when idle or asleep.
+  - Manual presets include `30 fps`, `60 fps`, native display refresh rate (`120`/`144`/`165`/`240 fps`), and **Unlimited**.
+- **Rich Appearance and Behavior Tuning**
+  - 11 coats, 2D/3D shading, eye colors and highlights, collars, blush, whiskers, window scaling, sleep timeout, and a dedicated native tuning window.
+- **Privacy First and Reliable Input**
+  - Never logs typed text or sends telemetry. Reacts only to key up/down state and cursor coordinates, with automatic stuck-key self-healing after lock screen, UAC prompts, or macOS Secure Input fields.
 
 ## Installation
 
 ### Windows (Windows 10 / 11, x64)
 
-Download `KeyCat-Windows-Setup.exe` from [Releases](https://github.com/blycr/KeyCat_Slim/releases/latest) and run it.
+Download `KeyCat-Windows-Setup.exe` from [Releases](https://github.com/blycr/KeyCat_Slim/releases/latest) and run the installer.
 
-- Installs per-user under `%LOCALAPPDATA%\KeyCat` without requiring administrator rights and registers cleanly in Windows Apps & Features.
+- Installs per-user under `%LOCALAPPDATA%\KeyCat` without administrator rights, integrates with Windows Apps & Features, and preserves existing settings on upgrade.
 - Because this open-source project is not commercially code-signed, Windows SmartScreen may show a warning; choose **More info -> Run anyway**.
 
-### macOS (macOS 13 Ventura+, Apple Silicon & Intel)
+### macOS (macOS 13 Ventura+, Apple Silicon and Intel)
 
 **Recommended via Homebrew Cask**:
 
@@ -52,72 +52,67 @@ brew uninstall --cask keycat          # Uninstall app
 brew uninstall --cask --zap keycat    # Uninstall and remove preferences
 ```
 
-**Manual download**: Grab `KeyCat-macOS.zip` from [Releases](https://github.com/blycr/KeyCat_Slim/releases/latest) and drag `KeyCat.app` into `/Applications`.
+**Manual download**: Download `KeyCat-macOS.zip` from [Releases](https://github.com/blycr/KeyCat_Slim/releases/latest) and drag `KeyCat.app` into `/Applications`.
 
 - On first launch, grant Input Monitoring in **System Settings -> Privacy & Security -> Input Monitoring**, then restart KeyCat.
-- If macOS reports the app as damaged after a browser download, clear the quarantine attribute:
+- If macOS reports the app as damaged after a manual download, clear the quarantine attribute:
   ```sh
   xattr -dr com.apple.quarantine /Applications/KeyCat.app
   ```
 
 ## Usage
 
-KeyCat lives in the system tray (Windows) or menu bar (macOS). Right-click the cat or click the tray/menu bar icon to configure:
+KeyCat resides in the system tray (Windows) or menu bar (macOS). Right-click the cat or click the tray/menu bar icon to open the menu:
 
-- **Drag & Click-Through**: Drag the cat anywhere on screen. Enable **Click-Through** for streaming or full-screen work so clicks pass straight through to underlying windows.
-- **Appearance & Tuning**: Switch coats, 2D/3D mode, size, and FPS; open the **Tune Reactions** window to adjust thresholds or trigger test animations immediately (`Esc` closes the window).
-- **Privacy & Hide**: Enable **Privacy Mode** to suppress floating keycap labels; **Hide** suspends rendering completely.
+- **Drag and Click-Through**: Drag the cat anywhere on screen. Enable **Click-Through** while streaming or working full-screen so clicks pass directly to underlying windows.
+- **Appearance and Tuning**: Switch coats, 2D/3D mode, scale, and FPS from the menu; open **Tune Reactions** to adjust sensitivity and preview animations immediately (`Esc` closes the window).
+- **Privacy and Hide**: Enable **Privacy Mode** to hide floating keycap labels; **Hide** suspends rendering completely.
 
-### Windows Gaming & Elevation Notes
+### Windows Gaming and Elevation Notes
 
 - Games running as Administrator block input hooks from non-elevated processes. Enable **Run as Administrator** in the tray menu to elevate via UAC.
 - When combined with **Launch at Login**, KeyCat uses Windows Task Scheduler so subsequent logins and launches do not trigger repeated UAC prompts.
-- Exclusive fullscreen games cover all desktop overlays; switch games to borderless windowed mode to keep KeyCat visible.
-
-## Repository Layout
-
-```text
-.
-├── Cargo.toml                 # Root Rust workspace (shared version & release profile)
-├── crates/
-│   ├── core/                  # Cross-platform 3D geometry, coats, springs, and behavior FSM
-│   └── ffi/                   # C-ABI static library bridging crates/core to macOS Swift
-├── apps/
-│   ├── windows/               # Native Windows app (Direct3D 11 + DirectComposition + Direct2D + NSIS)
-│   └── macos/                 # Native macOS app (Swift + Metal + AppKit + packaging scripts)
-├── assets/
-│   ├── icons/                 # Application and tray icons
-│   └── media/                 # Documentation preview media
-└── .github/
-    ├── workflows/             # Tag-driven release workflows for Windows and macOS
-    └── ISSUE_TEMPLATE/        # Issue and PR templates
-```
+- Exclusive fullscreen games cover desktop overlays; switch games to borderless windowed mode to keep KeyCat visible.
 
 ## Building from Source
 
+Requires stable Rust (1.80+); macOS builds also require Xcode Command Line Tools and the `aarch64-apple-darwin` and `x86_64-apple-darwin` targets.
+
 ```sh
-# 1. Run core and FFI unit tests
+# Run cross-platform core and FFI unit tests
 cargo test -p keycat-core -p keycat-ffi
 
-# 2. Build Windows native binary (on Windows)
+# Build Windows native binary (on Windows)
 cargo build --release -p keycat-native
-# Cross-compile from Linux/WSL using cargo-xwin:
-# cargo xwin build --release --target x86_64-pc-windows-msvc -p keycat-native
 
-# 3. Build and package macOS universal Metal app (on macOS with Rust + Xcode CLT)
-sh apps/macos/build.sh         # Produces build/KeyCat.app
-sh apps/macos/package.sh       # Produces dist/KeyCat-macOS.zip + .sha256 + latest-mac.json
+# Build and package macOS universal Metal app (on macOS)
+sh apps/macos/build.sh
+sh apps/macos/package.sh
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and release procedures.
+## Project Structure
+
+```text
+.
+├── Cargo.toml         # Root Rust workspace
+├── crates/
+│   ├── core/          # Cross-platform 3D geometry, coats, spring physics, and behavior FSM
+│   └── ffi/           # C-ABI static library bridging crates/core to macOS Swift
+├── apps/
+│   ├── windows/       # Native Windows app (Direct3D 11 + DirectComposition + Direct2D)
+│   └── macos/         # Native macOS app (Swift + Metal + AppKit)
+└── assets/
+    ├── icons/         # Application and tray icons
+    └── media/         # Preview media
+```
 
 ## Documentation
 
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Contributing & Release Guide: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Security & Privacy: [SECURITY.md](SECURITY.md)
-- Upstream Attribution & Licenses: [NOTICE](NOTICE)
+- [Changelog](CHANGELOG.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security & Privacy](SECURITY.md)
+- [Attribution & Third-Party Licenses](NOTICE)
 
-## License & Attribution
+## License
 
-Licensed under the [MIT License](LICENSE). KeyCat Slim builds upon the original concept and early implementation of [ElloboDK/KeyCat](https://github.com/ElloboDK/KeyCat). See [NOTICE](NOTICE) for attribution and third-party dependency details.
+Licensed under the [MIT License](LICENSE). KeyCat Slim builds upon [ElloboDK/KeyCat](https://github.com/ElloboDK/KeyCat) with a native cross-platform rewrite. See [NOTICE](NOTICE) for attribution and third-party dependency details.
