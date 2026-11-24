@@ -25,12 +25,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var tapRetry: Timer?
     var eventTap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
+    private var mouseMonitors: [Any] = []
     var keyboardAllowed = true
     var hit: UInt32 = UInt32(KC_HIT_NONE)
     var dragging = false
     var pendingDelta = CGPoint.zero
     var lastCursor = CGPoint(x: -9999, y: -9999)
     var heldModifiers = Set<Int>()
+    var heldKeys: [Int: String] = [:]
+    private var lastKeyAudit: CFTimeInterval = 0
     var keyEvents = 0
 
     let defaults = UserDefaults.standard
@@ -184,6 +188,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopFrameLoop()
+        tapRetry?.invalidate()
+        tapRetry = nil
+        NotificationCenter.default.removeObserver(self)
+        for monitor in mouseMonitors {
+            NSEvent.removeMonitor(monitor)
+        }
+        mouseMonitors.removeAll()
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = tapSource {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+                tapSource = nil
+            }
+            CFMachPortInvalidate(tap)
+            eventTap = nil
+        }
         if let s = scene {
             kc_scene_free(s)
             scene = nil
@@ -301,6 +321,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             stopFrameLoop()
             catView.cancelInteractions()
+            if let scene {
+                for (_, code) in heldKeys {
+                    code.withCString { kc_scene_on_key(scene, $0, 0) }
+                }
+            }
+            heldKeys.removeAll()
+            heldModifiers.removeAll()
             hit = UInt32(KC_HIT_NONE)
             dragging = false
             pendingDelta = .zero
@@ -374,6 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let now = CACurrentMediaTime()
+        reconcileHeldKeys(now: now, scene: scene)
         let dt = Float(min(0.1, max(0.0, now - lastFrameTime)))
         lastFrameTime = now
 
@@ -433,25 +461,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Recovers from missed keyUp / flagsChanged events (e.g. lock screen or Secure Input password fields).
+    private func reconcileHeldKeys(now: CFTimeInterval, scene: OpaquePointer) {
+        guard !heldKeys.isEmpty, now - lastKeyAudit >= 0.2 else { return }
+        lastKeyAudit = now
+        var stale: [(Int, String)] = []
+        for (keyCode, code) in heldKeys {
+            if !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode)) {
+                stale.append((keyCode, code))
+            }
+        }
+        for (keyCode, code) in stale {
+            heldKeys.removeValue(forKey: keyCode)
+            heldModifiers.remove(keyCode)
+            code.withCString { kc_scene_on_key(scene, $0, 0) }
+        }
+    }
+
     // MARK: Global Input
 
     func installMouseMonitors() {
         let moves: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
-        NSEvent.addGlobalMonitorForEvents(matching: moves) { [weak self] event in
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: moves, handler: { [weak self] event in
             MainActor.assumeIsolated { self?.addDelta(event) }
-        }
-        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+        }) { mouseMonitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] event in
             MainActor.assumeIsolated { self?.addDelta(event) }
             return event
-        }
-        NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
+        }) { mouseMonitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel], handler: { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, self.panel.isVisible else { return }
                 self.pendingDelta.y += -event.scrollingDeltaY * 0.4
             }
-        }
+        }) { mouseMonitors.append(m) }
         let buttons: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp]
-        NSEvent.addGlobalMonitorForEvents(matching: buttons) { [weak self] event in
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: buttons, handler: { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, self.panel.isVisible, let scene = self.scene else { return }
                 let down = [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
@@ -459,7 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 kc_scene_on_mouse_button(scene, down ? 1 : 0)
                 if down && self.fps == .auto { self.rescheduleFrameLoop() }
             }
-        }
+        }) { mouseMonitors.append(m) }
     }
 
     func addDelta(_ event: NSEvent) {
@@ -471,6 +516,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func handleKey(_ keyCode: Int, down: Bool) {
         keyEvents += 1
         guard panel.isVisible, let scene, let code = KeyMap.code(keyCode) else { return }
+        if down {
+            if keyCode != 57 { heldKeys[keyCode] = code }
+        } else {
+            heldKeys.removeValue(forKey: keyCode)
+        }
         code.withCString { kc_scene_on_key(scene, $0, down ? 1 : 0) }
         if down && fps == .auto { rescheduleFrameLoop() }
     }
@@ -524,6 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        tapSource = source
         eventTap = tap
         return true
     }

@@ -33,7 +33,7 @@ fn main() {
 #[cfg(windows)]
 mod win_app {
     use std::cell::{Cell, RefCell};
-    use std::collections::HashSet;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver};
@@ -116,7 +116,8 @@ mod win_app {
         fps: FpsMode,
         display_hz: u32,
         hook_ready: bool,
-        held: HashSet<u32>,
+        held: HashMap<u32, (u32, Option<&'static str>)>,
+        last_key_audit: Instant,
         petting: bool,
         drag: Option<Drag>,
         last_pointer: Option<(i32, i32)>,
@@ -365,6 +366,11 @@ mod win_app {
                 self.petting = false;
                 self.drag = None;
                 self.pending_delta = (0.0, 0.0);
+                for (_, code) in self.held.drain().map(|(_, v)| v) {
+                    if let Some(code) = code {
+                        self.scene.on_key(code, false);
+                    }
+                }
                 self.scene.hit = HitZone::None;
                 self.update_click_target();
                 unsafe { let _ = ShowWindow(self.hwnd, SW_HIDE); }
@@ -458,13 +464,36 @@ mod win_app {
             }
         }
 
+        fn reconcile_held_keys(&mut self, now: Instant) {
+            if self.held.is_empty() || now.saturating_duration_since(self.last_key_audit) < Duration::from_millis(200) {
+                return;
+            }
+            self.last_key_audit = now;
+            let mut released = Vec::new();
+            self.held.retain(|_, &mut (vk, code)| {
+                if vk > 0 && vk < 256 && !hook::is_vk_down(vk) {
+                    if let Some(c) = code {
+                        released.push(c);
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            for code in released {
+                self.scene.on_key(code, false);
+            }
+        }
+
         fn on_input(&mut self, input: Input) {
             match input {
-                Input::Key { id, code, down } => {
-                    if down && !self.held.insert(id) {
-                        return;
-                    }
-                    if !down {
+                Input::Key { id, vk, code, down } => {
+                    if down {
+                        if self.held.contains_key(&id) {
+                            return;
+                        }
+                        self.held.insert(id, (vk, code));
+                    } else {
                         self.held.remove(&id);
                     }
                     if self.visible {
@@ -907,15 +936,24 @@ mod win_app {
         }
     }
 
-    /// Bridges the bounded hook channel to the Win32 main loop so `MsgWaitForMultipleObjectsEx`
-    /// wakes in <1 ms on input while sleeping at 0% CPU when hidden or between frames.
-    fn spawn_wake_bridge(rx: Receiver<Input>, main_hwnd: isize) -> Receiver<Input> {
+    /// Bridges the bounded hook channel to the Win32 main loop using an atomic coalescing flag
+    /// (`notify_pending`) so bursts of key/mouse input wake the UI thread in <1 ms with a single
+    /// PostMessageW instead of flooding the message queue.
+    fn spawn_wake_bridge(
+        rx: Receiver<Input>,
+        main_hwnd: isize,
+        notify_pending: Arc<AtomicBool>,
+    ) -> Receiver<Input> {
         let (tx2, rx2) = mpsc::sync_channel::<Input>(256);
         thread::Builder::new()
             .name("input-wake".into())
             .spawn(move || {
                 while let Ok(ev) = rx.recv() {
-                    if tx2.try_send(ev).is_ok() {
+                    if tx2.try_send(ev).is_ok()
+                        && notify_pending
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                    {
                         unsafe {
                             let _ = PostMessageW(
                                 Some(HWND(main_hwnd as *mut _)),
@@ -1009,8 +1047,10 @@ mod win_app {
 
         let (sink, raw_rx) = mpsc::sync_channel::<Input>(256);
         let pointer_dirty = Arc::new(AtomicBool::new(false));
-        let hook_ready = hook::start(sink, pointer_dirty.clone()).is_ok();
-        let inputs = spawn_wake_bridge(raw_rx, hwnd.0 as isize);
+        let notify_pending = Arc::new(AtomicBool::new(false));
+        let hook_guard = hook::start(sink, pointer_dirty.clone()).ok();
+        let hook_ready = hook_guard.is_some();
+        let inputs = spawn_wake_bridge(raw_rx, hwnd.0 as isize, notify_pending.clone());
 
         let mut app = App {
             hwnd,
@@ -1026,7 +1066,8 @@ mod win_app {
             fps: FpsMode::Auto,
             display_hz: display::max_refresh_hz(),
             hook_ready,
-            held: HashSet::new(),
+            held: HashMap::new(),
+            last_key_audit: Instant::now(),
             petting: false,
             drag: None,
             last_pointer: None,
@@ -1074,6 +1115,8 @@ mod win_app {
                 let Some(ref mut app) = *borrow else {
                     return (false, true, Duration::from_millis(16), false);
                 };
+                // Clear coalescing flag before draining so concurrent input never misses a wakeup.
+                notify_pending.store(false, Ordering::Release);
                 let mut woke_pointer = pointer_dirty.swap(false, Ordering::AcqRel);
                 while let Ok(ev) = inputs.try_recv() {
                     if matches!(ev, Input::PointerWake | Input::Wheel(_)) {
@@ -1092,6 +1135,7 @@ mod win_app {
                 }
                 let due = app.visible && now >= next_frame;
                 if due {
+                    app.reconcile_held_keys(now);
                     let dt = now.saturating_duration_since(last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
                     app.scene.step(dt);
@@ -1124,6 +1168,7 @@ mod win_app {
             }
         }
 
+        drop(hook_guard);
         APP.with(|cell| {
             if let Some(mut app) = cell.borrow_mut().take() {
                 app.store.flush_if_dirty();

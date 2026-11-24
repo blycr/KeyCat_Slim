@@ -16,8 +16,9 @@ pub enum Button {
 
 pub enum Input {
     /// `id` names the physical key (scan code, plus 0x100 for E0 keys) so autorepeat can be
-    /// told apart from a new press; `code` is `None` for keys the scene has no name for.
-    Key { id: u32, code: Option<&'static str>, down: bool },
+    /// told apart from a new press; `vk` is used to reconcile stuck keys after Win+L / UAC;
+    /// `code` is `None` for keys the scene has no name for.
+    Key { id: u32, vk: u32, code: Option<&'static str>, down: bool },
     Button { button: Button, down: bool },
     /// Wheel notches, positive away from the user.
     Wheel(f64),
@@ -37,16 +38,19 @@ mod imp {
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC_EX,
+    };
     use windows::Win32::UI::Input::{
         GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
         RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetMessageW, RegisterClassW, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION,
-        HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
-        WINDOW_STYLE, WM_INPUT, WM_KEYDOWN, WM_SYSKEYDOWN, WNDCLASSW,
+        GetMessageW, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, UnhookWindowsHookEx,
+        HC_ACTION, HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, WH_KEYBOARD_LL,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WNDCLASSW,
     };
 
     use super::{Button, Input};
@@ -97,6 +101,7 @@ mod imp {
             }
             send(Input::Key {
                 id: scan | if extended { 0x100 } else { 0 },
+                vk: info.vkCode,
                 code: keymap::code(scan, extended, info.vkCode),
                 down,
             });
@@ -158,13 +163,38 @@ mod imp {
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
-    pub fn start(sink: SyncSender<Input>, pointer_dirty: Arc<AtomicBool>) -> Result<(), String> {
+    pub struct HookGuard {
+        thread_id: u32,
+        join: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+            if let Some(handle) = self.join.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Queries the live OS physical key state to recover from missed WM_KEYUP (e.g. Win+L or UAC).
+    pub fn is_vk_down(vk: u32) -> bool {
+        if vk == 0 || vk >= 256 {
+            return false;
+        }
+        unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+    }
+
+    pub fn start(sink: SyncSender<Input>, pointer_dirty: Arc<AtomicBool>) -> Result<HookGuard, String> {
         SINK.set(sink).map_err(|_| "input hook already started".to_string())?;
         let _ = POINTER_DIRTY.set(pointer_dirty);
-        let (ready, started) = mpsc::channel();
-        thread::Builder::new()
+        let (ready, started) = mpsc::channel::<Result<u32, String>>();
+        let join = thread::Builder::new()
             .name("input-hook".into())
             .spawn(move || unsafe {
+                let tid = GetCurrentThreadId();
                 let module = GetModuleHandleW(None).ok().map(|m| HINSTANCE(m.0));
                 let keyboard = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0) {
                     Ok(h) => h,
@@ -216,7 +246,7 @@ mod imp {
                     let _ = ready.send(Err(error.to_string()));
                     return;
                 }
-                let _ = ready.send(Ok(()));
+                let _ = ready.send(Ok(tid));
                 // Both WH_KEYBOARD_LL and WM_INPUT are dispatched through this thread's message loop.
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -226,7 +256,8 @@ mod imp {
                 let _ = UnhookWindowsHookEx(keyboard);
             })
             .map_err(|error| error.to_string())?;
-        started.recv().map_err(|error| error.to_string())?
+        let thread_id = started.recv().map_err(|error| error.to_string())??;
+        Ok(HookGuard { thread_id, join: Some(join) })
     }
 }
 
@@ -238,11 +269,15 @@ mod imp {
 
     use super::Input;
 
-    pub fn start(_sink: SyncSender<Input>, _pointer_dirty: Arc<AtomicBool>) -> Result<(), String> {
+    pub struct HookGuard;
+
+    pub fn is_vk_down(_vk: u32) -> bool {
+        false
+    }
+
+    pub fn start(_sink: SyncSender<Input>, _pointer_dirty: Arc<AtomicBool>) -> Result<HookGuard, String> {
         Err("global input is only implemented for Windows".into())
     }
 }
 
-pub fn start(sink: SyncSender<Input>, pointer_dirty: Arc<AtomicBool>) -> Result<(), String> {
-    imp::start(sink, pointer_dirty)
-}
+pub use imp::{is_vk_down, start, HookGuard};
