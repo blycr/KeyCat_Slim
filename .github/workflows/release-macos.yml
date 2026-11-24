@@ -16,16 +16,20 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and upload (e.g. v2.1.1); leave empty to build current branch only'
+        description: 'Release tag to build and upload (e.g. v2.2.0); leave empty to build current branch only'
         required: false
         default: ''
+      runner:
+        description: 'macOS runner label (default: macos-latest; fallback: macos-15-intel)'
+        required: false
+        default: 'macos-latest'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
