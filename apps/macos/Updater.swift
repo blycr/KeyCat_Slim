@@ -22,21 +22,27 @@ final class UpdateChecker {
     static let manifestURL = URL(string: "https://github.com/blycr/KeyCat_Slim/releases/latest/download/latest-mac.json")!
     static let releasesURL = URL(string: "https://github.com/blycr/KeyCat_Slim/releases/latest")!
     static let brewUpgradeCmd = "brew upgrade --cask keycat"
+    private static let retryDelays: [TimeInterval] = [
+        30 * 60,
+        60 * 60,
+        2 * 60 * 60,
+        4 * 60 * 60,
+        6 * 60 * 60,
+    ]
 
     let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     weak var app: AppDelegate?
     private(set) var state: State = .idle
     private var timer: Timer?
+    private var inFlight = false
+    private var retryStep = 0
 
     init(app: AppDelegate) {
         self.app = app
     }
 
     func start() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.check() }
-        timer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.check() }
-        }
+        scheduleNext(after: 15)
     }
 
     func stop() {
@@ -44,30 +50,55 @@ final class UpdateChecker {
         timer = nil
     }
 
-    func check() {
-        guard state != .checking else { return }
-        state = .checking
+    private func scheduleNext(after interval: TimeInterval) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check(manual: false) }
+        }
+    }
+
+    func check(manual: Bool = true) {
+        guard !inFlight else { return }
+        inFlight = true
+        if manual {
+            state = .checking
+        }
         Task {
+            defer { self.inFlight = false }
             do {
                 var req = URLRequest(url: Self.manifestURL)
                 req.cachePolicy = .reloadIgnoringLocalCacheData
+                req.timeoutInterval = 10
                 let (data, resp) = try await URLSession.shared.data(for: req)
                 guard (resp as? HTTPURLResponse)?.statusCode ?? 200 == 200 else {
-                    self.state = .failed
+                    self.handleFailure(manual: manual, message: "unexpected HTTP status")
                     return
                 }
                 let manifest = try JSONDecoder().decode(Manifest.self, from: data)
+                self.retryStep = 0
                 if manifest.build > self.build {
                     self.app?.log("update \(manifest.version) (build \(manifest.build)) available")
                     self.state = .available(manifest.version)
                 } else {
                     self.state = .current
                 }
+                self.scheduleNext(after: 6 * 60 * 60)
             } catch {
-                self.app?.log("update check failed: \(error.localizedDescription)")
-                self.state = .failed
+                self.handleFailure(manual: manual, message: error.localizedDescription)
             }
         }
+    }
+
+    private func handleFailure(manual: Bool, message: String) {
+        app?.log("update check failed: \(message)")
+        if manual {
+            state = .failed
+        } else if state == .checking {
+            state = .idle
+        }
+        let delay = Self.retryDelays[min(retryStep, Self.retryDelays.count - 1)]
+        retryStep = min(retryStep + 1, Self.retryDelays.count - 1)
+        scheduleNext(after: delay)
     }
 
     func promptUpgrade(version: String) {

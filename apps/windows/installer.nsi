@@ -67,8 +67,21 @@ Section "Install"
     RMDir /r "$APPDATA\KeyCat"
   ${EndIf}
 
-  ; Clean up legacy per-user install in %LOCALAPPDATA%\KeyCat (v2.0.0..v2.1.1) while keeping settings.
-  StrCpy $R8 "$LOCALAPPDATA\KeyCat"
+  ; Clean up legacy per-user install (v2.0.0..v2.1.1, including custom install folders) while keeping settings.
+  ReadRegStr $R8 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  ${If} $R8 != ""
+    StrCpy $R5 $R8 1
+    ${If} $R5 == '"'
+      StrCpy $R8 $R8 "" 1
+    ${EndIf}
+    StrCpy $R5 $R8 1 -1
+    ${If} $R5 == '"'
+      StrCpy $R8 $R8 -1
+    ${EndIf}
+  ${EndIf}
+  ${If} $R8 == ""
+    StrCpy $R8 "$LOCALAPPDATA\KeyCat"
+  ${EndIf}
   ${If} $R8 != $INSTDIR
   ${AndIf} ${FileExists} "$R8\Uninstall.exe"
     ReadRegStr $R7 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "KeyCat"
