@@ -45,7 +45,7 @@ KeyCat Slim 基于 [ElloboDK/KeyCat](https://github.com/ElloboDK/KeyCat) 进行�
 **推荐通过 Homebrew Cask 安装**：
 
 ```sh
-brew install --cask --no-quarantine blycr/tap/keycat
+brew install --cask blycr/tap/keycat
 ```
 
 升级与卸载：

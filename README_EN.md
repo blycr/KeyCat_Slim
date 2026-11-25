@@ -42,7 +42,7 @@ Download `KeyCat-Windows-Setup.exe` from [Releases](https://github.com/blycr/Key
 **Recommended via Homebrew Cask**:
 
 ```sh
-brew install --cask --no-quarantine blycr/tap/keycat
+brew install --cask blycr/tap/keycat
 ```
 
 Upgrade or uninstall:
