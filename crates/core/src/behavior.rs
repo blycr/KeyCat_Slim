@@ -1363,7 +1363,6 @@ impl Scene {
             blink = blink.max(0.85 * (clamp(act_u, 0.0, 1.0) * PI).sin());
         }
         let closed = (pet && !self.cross) || self.sleep > 0.5 || self.cat.yawn_open > 0.35;
-        let drowsy = if late_night && !self.cross && !curious_now { 0.24 } else { 0.0 };
         let dilate = (mix(1.0 + 0.25 * self.excite, self.tuning.pupil_size / 100.0, curious)
             * (1.0 - 0.5 * cross))
             .min(2.6);
@@ -1380,7 +1379,7 @@ impl Scene {
             };
             let e = &mut self.cat.eyes[i];
             e.closed = closed;
-            e.scale_y = (1.0 - 0.9 * blink) * (1.0 - 0.42 * cross) * (1.0 - drowsy) * (1.0 + 0.1 * curious);
+            e.scale_y = (1.0 - 0.9 * blink) * (1.0 - 0.42 * cross) * (1.0 + 0.1 * curious);
             e.scale_x = 1.0 + 0.06 * curious;
             e.pupil_scale.x += (0.044 * dilate - e.pupil_scale.x) * approach(10.0, dt);
             e.pupil_scale.y += (0.11 - 0.012 * (dilate - 1.5).max(0.0) - e.pupil_scale.y) * approach(10.0, dt);
