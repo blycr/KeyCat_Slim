@@ -1,23 +1,12 @@
 name: Release Windows
 
-# Builds the zero-WebView2 native Windows app (apps/windows) and packages it into
-# KeyCat-Windows-Setup.exe via NSIS. Tag pushes upload the installer directly to the Release.
+# Manual fallback workflow: Windows builds and NSIS releases are normally produced locally.
+# Trigger via workflow_dispatch only when a cloud Windows build is explicitly needed.
 on:
-  push:
-    tags: ['v*']
-  pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'crates/core/**'
-      - 'apps/windows/**'
-      - 'assets/icons/**'
-      - '.github/workflows/release-windows.yml'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build and upload (e.g. v2.1.1); leave empty to build current branch only'
+        description: 'Release tag to build and upload (e.g. v2.2.1); leave empty to build current branch only'
         required: false
         default: ''
 
@@ -40,11 +29,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check that the tag matches Cargo.toml workspace version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(inputs.tag, 'v')
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           version="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match Cargo.toml workspace version $version" >&2
+          if [ "$INPUT_TAG" != "v$version" ]; then
+            echo "tag $INPUT_TAG does not match Cargo.toml workspace version $version" >&2
             exit 1
           fi
 
